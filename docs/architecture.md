@@ -8,42 +8,47 @@ must match the code that is actually in the repo.
 
 ```mermaid
 flowchart LR
-    subgraph Sources["Customer data (synthetic, seeded)"]
-        PDF["~150 invoice PDFs<br/>7 layouts, ~18 scanned"]
-        CSVA["CSV A: legacy AP<br/>Latin-1, mixed formats"]
-        CSVB["CSV B: procurement<br/>alias names, dup rows"]
+    subgraph Sources["Messy inputs (synthetic, seeded, per domain pack)"]
+        S1["CSV · Excel · JSON/JSONL/logs<br/>(structured)"]
+        S2["EML · DOCX<br/>(semi-structured)"]
+        S3["PDF text · PDF scanned · TXT/MD<br/>(unstructured)"]
     end
-    FX["Frankfurter / ECB<br/>FX API"]
+    PACK["Domain pack<br/>schema · aliases · rules · entity keys"]
 
-    PDF --> ING[Ingest]
-    CSVA --> ING
-    CSVB --> ING
-    ING -->|raw_records| EXT["Extract<br/>Claude + Pydantic tool schema"]
-    EXT -->|extractions + confidence + evidence| VAL["Validate<br/>rules + confidence → status"]
-    VAL --> REC["Reconcile<br/>vendor match, dedupe, PDF↔CSV, USD"]
-    FX --> REC
+    S1 --> ING["Ingest<br/>one adapter per format"]
+    S2 --> ING
+    S3 --> ING
+    ING -->|raw_records + source location| EXT["Extract<br/>Claude + pack schema as a tool"]
+    PACK --> EXT
+    EXT -->|fields + confidence + evidence| VAL["Validate<br/>pack rules + confidence → status"]
+    PACK --> VAL
+    VAL --> REC["Reconcile<br/>entity match · dedupe · link across sources · conflicts"]
+    PACK --> REC
     REC --> DB[("Postgres 16<br/>+ audit trail")]
     DB --> APP["Streamlit<br/>Overview · Review queue · Exceptions"]
     APP -->|human corrections| DB
-    GT["ground_truth.json"] --> EVAL["Evals harness"]
+    GT["Ground truth (per pack)"] --> EVAL["Evals harness"]
     DB --> EVAL
     EVAL --> RES["evals/results/"]
 ```
+
+The engine (ingest, extract, validate, reconcile, store, app) knows nothing about any
+domain. Everything specific to a domain comes from the pack (D-004).
 
 ## Components
 
 | Component | Location | Responsibility | Status |
 |---|---|---|---|
-| Data generator | `data_gen/` | Seeded messy corpus and `ground_truth.json` | Planned (M1) |
-| Ingest | `src/pipeline/ingest/` | PDFs and CSVs into `raw_records`; normalize encodings, dates, amounts; keep source file and row | Planned (M2) |
-| FX client | `src/pipeline/reconcile/` (TBD) | Rate on the invoice date, weekend fallback, caching, retry | Planned (M2) |
-| Extract | `src/pipeline/extract/` | Claude structured output, per-field confidence and evidence, cache by file hash, token and cost log, model escalation | Planned (M3) |
-| Validate | `src/pipeline/validate/` | Rule checks plus confidence → `auto_approved` / `needs_review` / `rejected`, with reasons | Planned (M4) |
-| Reconcile | `src/pipeline/reconcile/` | Canonical vendors (rapidfuzz), cross-source dedupe, PDF↔CSV matching, USD conversion | Planned (M5) |
+| Data generator | `data_gen/` | Shared format writers, plus one generator per pack; writes the corpus, ground truth and a hash manifest | Planned (M1) |
+| Domain packs | `src/pipeline/domains/<pack>/` | Target model, aliases, rules, entity keys | Planned (M1 for schemas, later for rules and keys) |
+| Ingest | `src/pipeline/ingest/` | Format adapters → `raw_records`; normalize encodings, dates, amounts; record source location | Planned (M2) |
+| Extract | `src/pipeline/extract/` | Claude structured output driven by the schema, per-field confidence and evidence, cache by content hash, token and cost log, model escalation | Planned (M3) |
+| Validate | `src/pipeline/validate/` | Pack rules plus confidence → `auto_approved` / `needs_review` / `rejected`, with reasons | Planned (M4) |
+| Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz), dedupe across sources, record linking, field-level conflicts | Planned (M5) |
 | Store | `src/pipeline/store/` | SQLAlchemy models, Alembic migrations, audit trail | Planned (M2–M5) |
 | CLI | `src/pipeline/run.py` | Run each stage or the whole pipeline | Planned |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
-| Evals | `evals/` | Field accuracy, review precision, missed errors, match accuracy, cost and time | Planned (M7) |
+| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | Planned (M7) |
 | Infra | `docker-compose.yml`, `.github/workflows/ci.yml` | Postgres 16 locally; CI with a mocked LLM | Planned (M1) |
 
 ## Data model
@@ -52,11 +57,13 @@ Not built yet. Tables get documented here as their Alembic migrations land.
 
 ## Cross-cutting concerns
 
-- **Traceability:** every record carries its source file and row, from ingest
-  through to the UI.
-- **Determinism:** the generator is seeded, and LLM calls are cached by file hash, so
-  reruns are reproducible and cost nothing extra.
+- **Traceability:** every value carries its source location from ingest through to
+  the UI. A location is a file plus whichever of these applies: row, sheet/cell,
+  page, line, or email part.
+- **Determinism:** the generator is seeded and checked by a manifest-hash test
+  (D-002). LLM calls are cached by content hash, so reruns are reproducible and cost
+  nothing extra.
 - **Secrets:** read from `.env` and never committed; gitleaks runs as a pre-commit
   hook.
 - **Testing:** every module has tests. CI uses a mocked LLM client, so it needs no
-  API key.
+  API key. Engine tests run against more than one pack.

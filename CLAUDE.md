@@ -1,99 +1,133 @@
 # CLAUDE.md
 
 Context for every Claude Code session on this repo. The owner makes the design
-decisions; Claude is the pair programmer. Read this file in full before starting work.
-
-> **Scope change in progress (D-003 in `docs/decisions.md`):** the project is being
-> re-scoped from one company's invoices to generic messy data (CSV, Excel, PDF,
-> text documents). The brief below is the original and will be rewritten once the
-> owner settles the details. Check the Open decisions list in `docs/decisions.md`
-> before building anything.
+decisions; Claude is the pair programmer. Read this file in full before starting work,
+then read `docs/decisions.md` (especially "Open decisions") and the status column in
+`docs/architecture.md`.
 
 ## Project brief
 
 This is a portfolio project for Forward Deployed Engineer applications. It shows
-taking a customer's messy, inconsistent data, using an LLM to extract and reconcile
-it into a clean store, and shipping it as a working, tested, deployable system.
+taking messy, inconsistent data in many formats, using an LLM to extract and
+reconcile it into a clean store, and shipping that as a working, tested, deployable
+system.
 
-**Name:** invoice-reconciliation-pipeline
+**Name:** messy-data-reconciliation-pipeline
 
-**Scenario:** Coastline Facilities Group (fictional) is a regional property-maintenance
-company. Finance needs one trustworthy view of 3 years of vendor spend, but the data
-lives in three sources that disagree. The question the finished system must answer:
-"How much did we spend with each vendor, by month, in USD, and which invoices are
-duplicated, mismatched, or unpaid?"
+**What it does:** You give the system a *target schema* and a pile of messy files in
+mixed formats that describe the same real-world records. It produces a single clean,
+deduplicated table where every value can be traced back to its source. It also says
+which records need a human to review them and why. The system is generic; it does not
+tell one company's story (D-003, D-005).
 
-### Data sources
+**The question it must answer for any dataset:** "What are the true records, where did
+each value come from, which records are duplicated or contradict each other across
+sources, and which need human review?"
 
-We generate all of these ourselves with a seeded script, plus ground truth for evals:
+### Domain packs (D-004)
 
-1. ~150 vendor invoice PDFs across 6+ layouts. Field labels vary ("Inv #",
-   "Invoice No.", "Ref"). Some have multi-page line items, some have totals that don't
-   add up, a few are duplicates, and some are in EUR or CAD. Also ~15–20 image-only
-   "scanned" PDFs that are rotated and low contrast.
-2. CSV export A (legacy AP system). Mixed date formats (03/04/24, 2024-04-03,
-   "April 3"), amounts with $ and commas, Latin-1 encoding, trailing blank rows.
-3. CSV export B (procurement system). Different schema and column names, vendor names
-   spelled differently ("ACME Plumbing LLC" vs "Acme Plumbing"), missing invoice
-   numbers, duplicate rows.
-4. A public exchange-rate API with no key (Frankfurter / ECB rates). Use the rate on
-   the invoice date; handle weekends, caching, and API failures.
+The engine is driven by the target schema. Everything specific to one kind of data
+lives in a *domain pack*. Each pack holds:
+
+- the target Pydantic model, with field descriptions and the label/column aliases the
+  pack expects;
+- the validation rules for that domain;
+- the entity keys used for fuzzy matching and dedupe;
+- a seeded synthetic data generator and its ground truth.
+
+We ship a few packs (which ones is in Open decisions) to prove the engine really is
+generic. Adding a pack should require no changes to the engine.
+
+### Input formats (D-006)
+
+| Format | Mess to plant |
+|---|---|
+| CSV | Mixed encodings (Latin-1/UTF-8), mixed date formats, `$1,234.50` amounts, trailing blank rows, duplicate rows, schemas that differ between sources |
+| Excel (.xlsx) | Multiple sheets, header not in row 1, merged cells, totals rows, dates stored as serial numbers, notes in stray cells |
+| PDF, text layer | Varied layouts and label wording, tables that run across pages, internal totals that don't add up |
+| PDF, scanned | Image-only pages, rotated, low contrast, noise |
+| TXT / MD | Free-form notes and memos with the record buried in prose |
+| EML | Headers, quoted reply chains, signatures, record data in the body and/or attachments |
+| DOCX | Tables and paragraphs, inconsistent styling |
+| JSON / JSONL / logs | Keys named inconsistently, nested vs flat shapes, missing fields, log-line formats |
+
+All data is synthetic. We generate it with a seeded script, together with ground
+truth for the evals. Within a pack, the same real-world record is planted across
+several sources with variant spellings, conflicting values and duplicates, so that
+reconciliation can be scored.
 
 ### Pipeline stages
 
 Ingest → Extract (Claude) → Validate → Reconcile → Postgres → Streamlit app
 
-- **Ingest:** load PDFs and CSVs into a `raw_records` table, normalizing encodings,
-  dates, and amounts. Every record keeps its source file and row for traceability.
-- **Extract:** Anthropic Python SDK with structured output. Pass a Pydantic `Invoice`
-  model's JSON schema as a tool. Return per-field confidence and the evidence text
-  used. Text PDFs send extracted text; image-only PDFs send the PDF directly. Retry on
-  malformed output, cache by file hash, and log tokens and cost per document. Use a
-  smaller Claude model by default and escalate hard documents to a larger one. Read
-  the model name from config.
-- **Validate:** rule checks (line items sum to subtotal, subtotal + tax = total,
-  plausible dates, known currency). Combine these with model confidence into a status
-  (`auto_approved` / `needs_review` / `rejected`) plus human-readable reasons.
-- **Reconcile:** normalize vendor names and fuzzy-match them with rapidfuzz into a
-  canonical vendor table; close calls go to review. Deduplicate across sources, match
-  PDFs to CSV rows, and convert to USD.
+- **Ingest:** one adapter per format loads files into a `raw_records` table and
+  normalizes encodings, dates and amounts. Every record keeps its *source location*:
+  file plus row, sheet/cell, page, line, or email part.
+- **Extract:** Anthropic Python SDK with structured output. The domain pack's
+  Pydantic model is passed to the model as a tool via its JSON schema. Each field
+  comes back with a confidence score and the evidence text used. Text sources send
+  text; scanned PDFs send the PDF directly. Retry on malformed output, cache by
+  content hash, and log tokens and cost per document. Use a smaller Claude model by
+  default and escalate hard documents to a larger one. Read model names from config.
+  How structured sources (CSV/Excel/JSON) differ from unstructured ones will be
+  decided at Milestone 3.
+- **Validate:** each domain pack provides rule checks; the engine combines them with
+  model confidence into a status (`auto_approved` / `needs_review` / `rejected`) plus
+  human-readable reasons.
+- **Reconcile:** normalize entity names and fuzzy-match them with rapidfuzz into
+  canonical entity tables; close calls go to review. Deduplicate across sources and
+  link records that describe the same thing across sources. Report conflicts field by
+  field.
 - **Store:** Postgres 16 with SQLAlchemy and Alembic migrations, plus an audit trail
   for human corrections.
-- **Streamlit app** has three pages. *Overview:* spend by vendor and month, counts by
-  status, total LLM cost. *Review queue:* PDF on the left, extracted fields and flag
-  reasons on the right, approve or correct. *Exceptions:* duplicates, unmatched
-  invoices, total mismatches.
-- **Evals:** compare extractions with `ground_truth.json`. Report field accuracy per
-  field and per document type (text vs scanned vs layout), review-queue precision,
-  missed errors (wrong records that were auto-approved), duplicate and vendor-match
-  accuracy, and cost and time per 100 documents. Save each run to `evals/results/`.
+- **Streamlit app** has three pages:
+  - *Overview:* record counts by pack, source format and status, plus total LLM cost.
+  - *Review queue:* source preview on the left (PDF, image, email, sheet), extracted
+    fields and flag reasons on the right; approve or correct.
+  - *Exceptions:* duplicates, unmatched records, cross-source conflicts and rule
+    failures.
+- **Evals:** compare results with each pack's ground truth. Report:
+  - field accuracy per field, per pack and per source format (including text vs
+    scanned PDF);
+  - review-queue precision;
+  - missed errors (wrong records that were auto-approved);
+  - dedupe and entity-match accuracy;
+  - cost and time per 100 documents.
+
+  Save each run to `evals/results/`.
+
+Removed from the original brief: the FX conversion stage and the
+Frankfurter/ECB client (D-007).
 
 ### Stack
 
-Python 3.12, uv, Pydantic v2, anthropic SDK, pdfplumber, pypdf, pandas, reportlab
-(for the generator), rapidfuzz, httpx + tenacity, SQLAlchemy + Alembic, Postgres 16,
-Streamlit, pytest, ruff, mypy, pre-commit, Docker Compose, GitHub Actions.
+Python 3.12, uv, Pydantic v2, anthropic SDK, pdfplumber, pypdf, openpyxl,
+python-docx, pandas, reportlab + Pillow (for the generator), rapidfuzz, tenacity,
+SQLAlchemy + Alembic, Postgres 16, Streamlit, pytest, ruff, mypy, pre-commit, Docker
+Compose, GitHub Actions. Emails use the standard library's `email` package.
 
 ### Repo layout
 
-- `data_gen/` — seeded generator for the messy corpus and `ground_truth.json`
+- `data_gen/` — seeded generator: shared format writers plus one generator per
+  domain pack; writes the corpus and ground truth
 - `src/pipeline/{ingest,extract,validate,reconcile,store}/` and `run.py` (CLI)
+- `src/pipeline/domains/<pack>/` — the pack's schema, aliases, rules and entity keys
 - `app/` — Streamlit
 - `evals/` — harness and results history
 - `tests/`
-- `docs/` — architecture, `decisions.md`
+- `docs/` — `architecture.md`, `decisions.md`, `howto.md`
 - `.github/workflows/ci.yml`
 - `docker-compose.yml`, `pyproject.toml`, `.env.example`
 
 ### Milestones (one per session, commit at the end of each)
 
-1. Scaffold and messy-data generator
-2. Ingestion layer and FX client
-3. LLM extraction
+1. Scaffold and messy-data generator (all formats, first domain packs, ground truth)
+2. Ingestion adapters for every format, `raw_records`, first Alembic migration
+3. LLM extraction, driven by the schema
 4. Validation and confidence statuses
-5. Reconciliation
+5. Reconciliation (entity matching, dedupe, linking across sources, conflicts)
 6. Streamlit UI
-7. Evals, CI, README case study, demo
+7. Evals, CI, README write-up, demo
 
 ## Working rules
 
@@ -119,6 +153,7 @@ Streamlit, pytest, ruff, mypy, pre-commit, Docker Compose, GitHub Actions.
 - Never invent results. README metrics come only from actual eval runs.
 - Keep cost low: cache LLM calls, and use the smaller model unless escalation is
   needed.
-- The README will be written as a client case study: problem, results scorecard,
-  architecture, key decisions, what I'd do next for a real customer, how to run it,
-  and a note that it was built with Claude Code as a pair programmer.
+- The README is a project write-up, not a client story (D-005). It covers: the
+  problem (messy multi-format data), a results scorecard from real eval runs, the
+  architecture, key decisions, what I'd do next for a real deployment, how to run
+  it, and a note that it was built with Claude Code as a pair programmer.

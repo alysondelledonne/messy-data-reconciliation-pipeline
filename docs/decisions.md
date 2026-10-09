@@ -83,14 +83,76 @@ Entry template:
   settled. The original invoice question about corpus scale (about 400 invoices,
   150 PDFs) is withdrawn.
 
+## D-004: The engine is driven by the schema, with domain packs
+- **Date:** 2026-10-09 · **Milestone:** 1 · **Status:** Accepted (owner)
+- **Context:** "Generic" still needs a target to extract into. LLM extraction and
+  the evals both need a schema and ground truth.
+- **Choice:** The engine takes a domain pack as config. A pack holds the Pydantic
+  target model (with field descriptions and aliases), the validation rules, the
+  entity keys for matching and dedupe, and a seeded generator with ground truth.
+  We ship several packs to prove the engine is generic.
+- **Alternatives:** Fully schema-free, where the LLM infers the schema (most
+  generic, but hard to evaluate and less reliable). A fixed set of 2–3 hard-coded
+  schemas (simpler, but no plug-in point).
+- **Why:** This is how the work goes with a real customer: agree on the target
+  schema, then make the messy data fit it. Fixed schemas keep the evals honest.
+  Adding a second pack without touching the engine is what proves it is generic.
+- **Consequences:** Pack code must not leak into the engine; tests should run the
+  engine against more than one pack. Supersedes the single `Invoice` model in the
+  original brief.
+
+## D-005: No customer scenario; present it as a generic tool
+- **Date:** 2026-10-09 · **Milestone:** 1 · **Status:** Accepted (owner)
+- **Context:** The original brief framed everything around Coastline Facilities
+  Group, and the README was to read as a client case study.
+- **Choice:** Drop the fictional customer. Present the system as a generic tool,
+  with datasets in a benchmark style. The README becomes a project write-up: the
+  problem, a scorecard, the architecture, decisions, next steps for a real
+  deployment, and how to run it.
+- **Alternatives:** A generic engine with 1–2 fictional customer stories for the
+  demo, or keep Coastline but widen its data.
+- **Why:** This is the owner's call; the framing stays general rather than tied to
+  one domain.
+- **Consequences:** The README results scorecard reports per pack and per format,
+  not as one business question. The "What I'd do next" section speaks to a generic
+  real deployment.
+
+## D-006: Supported input formats
+- **Date:** 2026-10-09 · **Milestone:** 1 · **Status:** Accepted (owner)
+- **Context:** A generic messy-data system needs to cover the formats customer data
+  actually comes in.
+- **Choice:** CSV, Excel (.xlsx), PDF (text layer and scanned image-only), TXT/MD,
+  EML, DOCX, and JSON/JSONL/log lines. The generator plants realistic mess in each
+  one (the table is in `CLAUDE.md`).
+- **Alternatives:** Fewer formats (less to build, but a weaker demonstration), or
+  more (HTML, images other than PDF, XML).
+- **Why:** Together these cover structured (CSV/Excel/JSON), semi-structured
+  (EML/DOCX/logs) and unstructured (PDF/TXT) data, which is the full range of
+  extraction difficulty.
+- **Consequences:** New dependencies: openpyxl and python-docx (`email` is in the
+  standard library). Ingest needs one adapter per format, and source locations must
+  handle sheet/cell, page, line and email part.
+
+## D-007: What carries over from the original brief
+- **Date:** 2026-10-09 · **Milestone:** 1 · **Status:** Accepted (owner)
+- **Context:** Some parts of the original invoice brief were specific to the
+  domain.
+- **Choice:** Keep reconciliation across sources (fuzzy entity matching, dedupe,
+  linking records across sources), scanned/image PDFs sent to Claude as documents,
+  and the review UI with its audit trail. Drop the FX conversion stage and the
+  Frankfurter/ECB client.
+- **Alternatives:** Keep FX as an optional step that only a pack with money fields
+  would use.
+- **Why:** Reconciliation and human review are the core of the project. FX was a
+  feature of the invoice domain, not of the engine.
+- **Consequences:** Removes httpx and the external-API story from the stack.
+  Currency becomes a plain field where a pack has one. The earlier open question
+  about currency in ground truth is closed: no conversion, amounts stay in their
+  original currency.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-1. **Currency in ground truth.** From the Milestone 1 plan; still applies if any
-   dataset has money in more than one currency. Recommendation: store amounts in
-   their original currency only, and compute USD truth from cached ECB rates using
-   the pipeline's own FX client.
-2. **Re-scope details (D-003).** What "generic" means: a schema that can be
-   swapped, a choice of demo datasets, whether the fictional customer scenario
-   stays, which text formats count, and which original stages survive.
+1. **Which domain packs, and how many in Milestone 1?** See the Milestone 1 plan.
+2. **Corpus scale for each pack.** See the Milestone 1 plan.
