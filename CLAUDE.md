@@ -3,6 +3,12 @@
 Context for every Claude Code session on this repo. The owner makes the design
 decisions; Claude is the pair programmer. Read this file in full before starting work.
 
+> **Scope change in progress (D-003 in `docs/decisions.md`):** the project is being
+> re-scoped from one company's invoices to generic messy data (CSV, Excel, PDF,
+> text documents). The brief below is the original and will be rewritten once the
+> owner settles the details. Check the Open decisions list in `docs/decisions.md`
+> before building anything.
+
 ## Project brief
 
 This is a portfolio project for Forward Deployed Engineer applications. It shows
