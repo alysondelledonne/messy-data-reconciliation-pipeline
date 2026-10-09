@@ -97,6 +97,14 @@ Streamlit, pytest, ruff, mypy, pre-commit, Docker Compose, GitHub Actions.
   tests, and propose a commit message.
 - For every real design choice, add a short entry to `docs/decisions.md`: the choice,
   the alternatives, and why.
+- Keep three living docs current as part of every step, not as a cleanup at the end.
+  A milestone is not done until all three match the code:
+  - `docs/decisions.md`: major decisions (numbered `D-NNN`, never deleted, superseded
+    when reversed), plus an "Open decisions" list of questions waiting on the owner.
+  - `docs/architecture.md`: the system as it is now (diagram, components with a
+    built/planned status, data model, cross-cutting concerns).
+  - `docs/howto.md`: commands that actually work today for setup, running, testing
+    and operating, each tagged with the milestone that added it.
 - Tests for every module. CI uses a mocked LLM client, so no API key is needed in CI.
 - Never commit secrets. Read `ANTHROPIC_API_KEY` and `DATABASE_URL` from `.env`, keep
   `.env` in `.gitignore`, and add a secret-scanning pre-commit hook.
