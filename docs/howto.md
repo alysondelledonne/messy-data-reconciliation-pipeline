@@ -111,6 +111,10 @@ uv run pre-commit run gitleaks-history --hook-stage manual --all-files   # secre
 
 ## Start Postgres (M1)
 
+Needs Docker with Compose v2. On macOS, install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+(free for personal use) or `brew install --cask docker`, and start it once so the
+`docker` command is available. [OrbStack](https://orbstack.dev/) or Colima also work.
+
 ```bash
 docker compose up -d          # Postgres 16 on localhost:${POSTGRES_PORT:-5432}, values from .env
 docker compose ps             # wait for "healthy"
