@@ -206,6 +206,16 @@ uv run python -m pipeline.run db downgrade base && uv run python -m pipeline.run
 Put `ANTHROPIC_API_KEY=sk-ant-...` in `.env`. It's gitignored, and gitleaks blocks
 committing keys. CI never needs a key; it uses a fake client (D-027).
 
+If calls fail with `This API key is not scoped to a workspace ... anthropic-workspace-id`
+(check with `SELECT status, error FROM llm_calls LIMIT 5;`), there are two fixes:
+- Create a key inside a workspace in the Console, under Settings → API Keys, and use
+  that key instead.
+- Or keep your key and add `ANTHROPIC_WORKSPACE_ID=wrkspc_...` to `.env`. The ID is on
+  the Console's Workspaces page. The pipeline then sends it as the
+  `anthropic-workspace-id` header.
+
+Failed calls aren't cached, so re-running `extract` retries them.
+
 ### 2. Start from a clean, current corpus
 If you regenerated the corpus since your last ingest (generator 1.1.0 fixed
 ground-truth bugs and renamed some contacts files), reset the database, because

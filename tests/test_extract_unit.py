@@ -350,3 +350,12 @@ def test_file_level_constant_mapping() -> None:
     assert rec.values()["payment_status"] == "unpaid"
     assert rec.fields["payment_status"].flags == ["file_level_constant"]
     assert rec.values()["vendor_name"] == "Acme"  # a column wins over a constant
+
+
+def test_workspace_header_only_when_configured() -> None:
+    plain = AnthropicLLMClient(SETTINGS)
+    assert "anthropic-workspace-id" not in plain._client.default_headers
+    scoped = AnthropicLLMClient(
+        Settings(_env_file=None, anthropic_api_key="sk-test", anthropic_workspace_id="wrkspc_x")
+    )
+    assert scoped._client.default_headers["anthropic-workspace-id"] == "wrkspc_x"

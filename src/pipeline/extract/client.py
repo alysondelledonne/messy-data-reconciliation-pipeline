@@ -85,7 +85,12 @@ class AnthropicLLMClient:
 
     def __init__(self, settings: Settings) -> None:
         key = settings.anthropic_api_key.get_secret_value() if settings.anthropic_api_key else None
-        self._client = anthropic.Anthropic(api_key=key, max_retries=4)
+        headers = (
+            {"anthropic-workspace-id": settings.anthropic_workspace_id}
+            if settings.anthropic_workspace_id
+            else None
+        )
+        self._client = anthropic.Anthropic(api_key=key, max_retries=4, default_headers=headers)
         self._fallback_models = (
             {settings.escalation_model} if settings.escalation_fallbacks else set()
         )

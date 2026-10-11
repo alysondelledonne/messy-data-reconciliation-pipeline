@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://pipeline:pipeline@localhost:5432/pipeline"
     anthropic_api_key: SecretStr | None = None
+    # Needed only for API keys that aren't scoped to a workspace: the API then requires the
+    # anthropic-workspace-id header to say which workspace to use (and bill).
+    anthropic_workspace_id: str | None = None
 
     # Extraction (D-023..D-027)
     extract_model: str = "claude-haiku-5-5"
@@ -42,7 +45,7 @@ class Settings(BaseSettings):
     escalation_fallbacks: bool = True  # server-side refusal fallback on the escalation model
     prices: dict[str, ModelPrice] = DEFAULT_PRICES
 
-    @field_validator("anthropic_api_key", mode="before")
+    @field_validator("anthropic_api_key", "anthropic_workspace_id", mode="before")
     @classmethod
     def _blank_key_is_none(cls, v: object) -> object:
         return None if v in ("", None) else v  # .env.example ships ANTHROPIC_API_KEY= (blank)
