@@ -25,7 +25,17 @@ as not yet available.
 ## Set up a development machine (M1)
 
 Prerequisites: [uv](https://docs.astral.sh/uv/) and Git. Docker is needed only for
-Postgres.
+Postgres. You don't need to install Python yourself; uv fetches 3.12.
+
+Install uv if `uv --version` fails, then open a new terminal:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh        # macOS / Linux (or: brew install uv)
+# Windows (PowerShell):
+# powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then:
 
 ```bash
 uv sync                      # installs Python 3.12 if needed, plus all dependency groups
