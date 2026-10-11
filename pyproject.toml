@@ -55,7 +55,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "C4", "PTH"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["src", "data_gen", "tests"]
+files = ["src", "data_gen", "tests", "evals"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]

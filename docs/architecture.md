@@ -49,7 +49,7 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
 | CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]` | **Built** for db, ingest (M2) and extract (M3) |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
-| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | Planned (M7) |
+| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (field accuracy of extractions so far) built in M3; full harness planned (M7) |
 | Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally and as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
 
 ## Synthetic corpus (Milestone 1)

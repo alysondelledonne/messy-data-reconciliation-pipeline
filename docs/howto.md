@@ -299,6 +299,15 @@ ORDER BY conf LIMIT 20;
 SELECT signature, columns, mapping->'model' AS model, mapping->'mappings' FROM column_mappings;
 ```
 
+### Check accuracy against ground truth (no API calls)
+```bash
+uv run python -m evals.spot_check --pack invoices
+uv run python -m evals.spot_check --pack contacts --show 20
+```
+Scores the records extracted so far, field by field, against what each source
+actually states, separately for LLM documents and mapped rows, and prints example
+mismatches with file and location. A quick sanity check; the full eval is Milestone 7.
+
 ### Re-extract
 - **Clear results but keep the cache:** `DELETE FROM extraction_results;`. The next
   run rebuilds everything from `llm_calls` at no cost.
