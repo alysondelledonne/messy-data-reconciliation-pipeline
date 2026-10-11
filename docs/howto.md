@@ -103,7 +103,7 @@ These are the same checks CI runs:
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
-uv run pytest                                  # about 10 seconds, including a fresh-process determinism check
+uv run pytest                                  # about 20 seconds; DB tests need Postgres up (see below)
 uv run pytest -m "not slow"                    # skip the subprocess regeneration test
 uv run pre-commit run --all-files              # every hook, on every file
 uv run pre-commit run gitleaks-history --hook-stage manual --all-files   # secrets scan over full git history
@@ -125,11 +125,85 @@ Expect `docker compose ps` to show `(healthy)` after about 5–10 seconds, and `
 (`docker compose exec postgres psql -U pipeline -d pipeline -c 'select version();'`)
 to print `PostgreSQL 16.x`.
 
+## Create the database tables (M2)
+
+With Postgres running (see above):
+
+```bash
+uv run python -m pipeline.run db upgrade       # apply all migrations
+uv run python -m pipeline.run db current       # show the current revision (0001)
+uv run python -m pipeline.run db downgrade     # undo one revision; "base" undoes all
+```
+
+`DATABASE_URL` comes from `.env`. Every schema change ships as a new file in
+`migrations/versions/`, and a test fails if the models and migrations disagree (D-022).
+
+## Ingest files (M2)
+
+```bash
+uv run python -m pipeline.run ingest --pack invoices --dry-run data/generated/invoices
+uv run python -m pipeline.run ingest --pack invoices data/generated/invoices
+uv run python -m pipeline.run ingest --pack contacts data/generated/contacts
+```
+
+- `--dry-run` parses everything and prints counts by format and flag, without
+  touching the database.
+- Re-running is safe: unchanged files are skipped (`159 unchanged (skipped)`). A
+  changed file is stored as a new version.
+- `ground_truth.json`, `manifest.json` and dotfiles are skipped. Add more patterns
+  with `--exclude '*.tmp'`.
+- Unsupported or broken files are reported and recorded with `status`, and the run
+  continues. The exit code is 1 if any file errored.
+
+Expected for the seed-42 corpus: invoices 159 files / 718 records, contacts 143
+files / 707 records.
+
+### Look at what was ingested
+
+```bash
+docker compose exec postgres psql -U pipeline -d pipeline
+```
+
+```sql
+-- Records per format
+SELECT sf.format, count(*) FROM raw_records r
+JOIN source_files sf ON sf.id = r.source_file_id GROUP BY 1 ORDER BY 1;
+
+-- The legacy AP export: original vs normalized values, with source row
+SELECT r.location, r.raw->>'Inv Date' AS raw_date, r.normalized->'Inv Date' AS inv_date,
+       r.raw->>'Amount' AS raw_amount, r.normalized->'Amount' AS amount
+FROM raw_records r JOIN source_files sf ON sf.id = r.source_file_id
+WHERE sf.path = 'ap_register.csv' ORDER BY r.id LIMIT 10;
+
+-- What was inferred or needs attention
+SELECT r.flags, count(*) FROM raw_records r GROUP BY 1 ORDER BY 2 DESC;
+
+-- Scanned PDFs waiting for vision extraction
+SELECT sf.path FROM raw_records r JOIN source_files sf ON sf.id = r.source_file_id
+WHERE r.flags ? 'needs_vision';
+
+-- Exact duplicate files
+SELECT path, meta->'identical_to' FROM source_files WHERE meta ? 'identical_to';
+```
+
+### Start over
+
+```bash
+uv run python -m pipeline.run db downgrade base && uv run python -m pipeline.run db upgrade
+```
+
+## Database tests (M2)
+
+- `uv run pytest` runs the DB tests against a separate `pipeline_test` database,
+  dropped, recreated and migrated once per session. Each test is rolled back.
+- If Postgres isn't reachable, those tests are **skipped** and pytest says why. In
+  CI, `REQUIRE_DB=1` makes them fail instead (D-017).
+- To point them somewhere else, set `TEST_DATABASE_URL`.
+
 ---
 
 ## Planned (not yet available)
 
-- **Ingest** (M2): load every format into `raw_records` with source locations.
 - **Extract, validate, reconcile** (M3–M5): CLI commands from
   `src/pipeline/run.py`.
 - **Run the app** (M6): Streamlit.

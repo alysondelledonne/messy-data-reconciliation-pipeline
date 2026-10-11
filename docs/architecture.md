@@ -41,16 +41,16 @@ domain. Everything specific to a domain comes from the pack (D-004).
 |---|---|---|---|
 | Data generator | `data_gen/` | Shared format writers, plus one generator per pack; writes the corpus, ground truth and a hash manifest | **Built (M1)** |
 | Domain packs | `src/pipeline/domains/<pack>/` | Target model, aliases, rules, entity keys | **Schemas built (M1)**: `Invoice`, `Contact`, plus a registry. Rules and keys come later |
-| Ingest | `src/pipeline/ingest/` | Format adapters → `raw_records`; normalize encodings, dates, amounts; record source location | Planned (M2) |
+| Ingest | `src/pipeline/ingest/` | Format adapters → raw records; encodings, dates, amounts normalized next to the original values; exact source locations | **Built (M2)** |
 | Extract | `src/pipeline/extract/` | Claude structured output driven by the schema, per-field confidence and evidence, cache by content hash, token and cost log, model escalation | Planned (M3) |
 | Validate | `src/pipeline/validate/` | Pack rules plus confidence → `auto_approved` / `needs_review` / `rejected`, with reasons | Planned (M4) |
 | Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz), dedupe across sources, record linking, field-level conflicts | Planned (M5) |
-| Store | `src/pipeline/store/` | SQLAlchemy models, Alembic migrations, audit trail | Planned (M2–M5) |
+| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest tables built (M2)**; extraction, reconciliation and audit tables come later |
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
-| CLI | `src/pipeline/run.py` | Run each stage or the whole pipeline | Planned |
+| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`; later stages add commands | **Built (M2)** for db + ingest |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
 | Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | Planned (M7) |
-| Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally; CI runs ruff, mypy, pytest and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
+| Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally and as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
 
 ## Synthetic corpus (Milestone 1)
 
@@ -110,15 +110,100 @@ Each `ground_truth.json` (models in `data_gen/ground_truth.py`) contains:
 | `data_gen/packs/invoices/` | Vendors, catalog, 7 PDF layouts, the four invoice sources |
 | `data_gen/packs/contacts/` | Companies, names, fictional phone ranges (D-013), the seven contact sources |
 
+## Ingestion (Milestone 2)
+
+```mermaid
+flowchart LR
+    P["input paths"] --> W["iter_files<br/>(stable order, excludes generator artifacts)"]
+    W --> R{"extension → adapter<br/>(adapters/registry.py)"}
+    R --> A1["csv_ · xlsx"] & A2["pdf"] & A3["eml · docx"] & A4["text · jsonish"]
+    A1 & A2 & A3 & A4 --> IF["IngestedFile<br/>+ RawRecords (in memory)"]
+    T["adapters/tabular.py<br/>header · totals · fill-down"] -.-> A1
+    N["normalize.py<br/>encodings · dates · amounts"] -.-> A1 & A3 & A4
+    IF --> S["store/ingest_repo.save_ingest<br/>(idempotent, one transaction)"]
+    S --> DB[("ingest_runs · source_files · raw_records")]
+```
+
+Adapters are plain functions `(bytes, IngestedFile) -> None`, with no database
+access, so they are unit-tested in isolation. One bad file is recorded as
+`status=error` and the run continues.
+
+| Format | Record kind(s) | `location` | Notable flags |
+|---|---|---|---|
+| CSV | `row` | `{row}` (physical line, quoted newlines handled) | encoding in `source_files.encoding`, `short_row` |
+| XLSX | `row`, `total_row`, `stray_note`, `sheet_text` | `{sheet, row}` / `{sheet}` | `filled_down:<col>`, `total_row`, `stray_cell` |
+| PDF | `document` | `{pages}` | `multi_page`; scans: format `pdf_scanned`, `needs_vision`, `no_text_layer` |
+| EML | `email_body`, `email_quoted`, `email_attachment` | `{part: body \| quoted \| attachment:<name>}` | `quoted`, `html_only`, `binary_attachment` |
+| DOCX | `paragraph`, `heading`, `table_row` | `{paragraph}` / `{table, row}` | |
+| TXT / MD | `document` | `{line_start, line_end}` | `markdown` |
+| JSONL | `json_object`, `malformed_line` | `{line}` | `has_nulls`, `malformed_json` |
+| JSON | `json_object` | `{index}` | |
+| Log | `log_line` | `{line}` | `unparsed_log_line` |
+
+Each record carries `text` (what later stages read), `raw` (the source values
+verbatim), `normalized` (typed readings: `{"type": "date"|"amount", "value", ...flags}`)
+and `flags`. The acceptance test (`tests/test_ingest_corpus.py`) checks that every
+ground-truth occurrence in both packs is covered by exactly one data record, and
+that normalized dates and amounts match the truth.
+
 ## Data model
 
-No database tables yet. Tables get documented here as their Alembic migrations land.
+Migration `0001` (`migrations/versions/0001_ingest_tables.py`):
+
+```mermaid
+erDiagram
+    ingest_runs ||--o{ source_files : "stored in"
+    source_files ||--o{ raw_records : "cut into"
+    ingest_runs {
+        int id PK
+        string pack
+        jsonb inputs
+        timestamptz started_at
+        timestamptz finished_at
+        int files_seen
+        int files_ingested
+        int files_skipped
+        int files_failed
+        int records
+    }
+    source_files {
+        int id PK
+        int ingest_run_id FK
+        string pack
+        text path
+        string format
+        string sha256
+        bigint size_bytes
+        string encoding
+        string status
+        text error
+        jsonb meta
+    }
+    raw_records {
+        int id PK
+        int source_file_id FK
+        string kind
+        jsonb location
+        text text
+        jsonb raw
+        jsonb normalized
+        jsonb flags
+        string content_hash
+    }
+```
+
+- `source_files` is unique on `(pack, path, sha256)`: re-ingesting is a no-op, and
+  identical content under another path is stored with `meta.identical_to` (D-020).
+- `meta` holds per-format details: preamble lines, header row, sheet names,
+  page count, email headers.
+- Deleting a source file cascades to its raw records.
 
 ## Cross-cutting concerns
 
 - **Traceability:** every value carries its source location from ingest through to
-  the UI. A location is a file plus whichever of these applies: row, sheet/cell,
-  page, line, or email part.
+  the UI: `source_files.path` plus `raw_records.location` (see the table above).
+  `pipeline.ingest.models.location_covers()` relates a record's location to a finer
+  one, such as a line inside a document or a mention inside a paragraph.
 - **Determinism:** the generator is seeded and checked by a manifest-hash test
   (D-002). LLM calls are cached by content hash, so reruns are reproducible and cost
   nothing extra.

@@ -283,8 +283,132 @@ Entry template:
 - **Consequences:** pre-commit builds gitleaks from source with Go the first time it
   runs; after that it is cached.
 
+## D-016: How big a raw record is
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted (owner)
+- **Context:** Ingest has to cut each file into units that later stages extract
+  from and cite. Units that are too fine lose context; units that are too coarse
+  make locations vague.
+- **Choice:** It depends on the source:
+  - Structured sources get one record per row or line: CSV row, XLSX row per sheet,
+    JSONL line, log line, DOCX table row.
+  - Unstructured sources get one record per document or part: a PDF, a TXT/MD file
+    (covering all its lines), an email's own text, its quoted reply chain, each
+    attachment, and each DOCX paragraph.
+  - In Milestone 3, extraction returns zero or more records per raw record.
+- **Alternatives:** Always split to the smallest unit (a line or paragraph), or one
+  record per file everywhere.
+- **Why:** A signature block or an invoice only makes sense as a whole, while a
+  CSV row already is a whole record. Splitting an email into own text and quoted
+  chain stops one person's details being attributed to another.
+- **Consequences:** Locations can be spans (`line_start`/`line_end`). The shared
+  `location_covers()` decides whether a record contains a finer location; the
+  evals reuse it.
+
+## D-017: Database tests run on real Postgres, required in CI and skipped locally
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted (owner)
+- **Context:** The store uses Postgres-only features (JSONB and its operators). Tests
+  must exercise the real thing without making Docker mandatory for every test run.
+- **Choice:**
+  - CI runs a `postgres:16` service container and sets `REQUIRE_DB=1`, so the DB
+    tests fail rather than skip.
+  - Locally they run when `docker compose` is up and skip otherwise.
+  - Tests use a separate `<db>_test` database, recreated and migrated once per
+    session. Each test runs inside a transaction that is rolled back.
+- **Alternatives:** testcontainers (needs Docker even for unit tests), or SQLite (not
+  the deployed database, and its JSON behaves differently).
+- **Why:** Tests run against the same engine we deploy, while unit tests stay fast
+  and Docker-free.
+- **Consequences:** A developer without Docker sees skipped tests, not failures.
+  CI is the backstop.
+
+## D-018: Spreadsheet structure is repaired at ingest
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted (owner)
+- **Context:** Report-style spreadsheets have title rows, grouped rows where only
+  the first row names the group, subtotal and total rows, and stray notes.
+- **Choice:**
+  - Ingest finds the header row by itself.
+  - It fills down a blank leading column within a group, flagged
+    `filled_down:<column>`.
+  - Total and subtotal rows (`total_row`) and stray notes (`stray_note`) are kept
+    as separate kinds.
+  - A sheet with no table becomes one `sheet_text` record.
+- **Alternatives:** Keep rows exactly as they are and let the LLM sort it out
+  (costs more, harder to test).
+- **Why:** These are structural repairs, deterministic and testable against
+  ground truth. Nothing is dropped, and every inferred value is flagged.
+- **Consequences:** Fill-down applies only to the leftmost column of XLSX sheets.
+  Other layouts may need a pack-level hint later.
+
+## D-019: Keep the original value next to the normalized one; never guess silently
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted
+- **Context:** Normalizing dates and amounts helps every later stage, but a wrong
+  guess, presented as clean data, is worse than no guess.
+- **Choice:** Every record stores `raw` (the source values, decoded to text) and
+  `normalized` (typed readings with flags) side by side. Conventions:
+  - **Slash dates** are read month-first. If both parts are 12 or less, the date is
+    flagged `ambiguous_day_month`; a first part over 12 means day-first, flagged
+    `day_first`.
+  - **Dot dates** are read day-first.
+  - **Dates with no year** become a partial (`--04-03`) flagged `missing_year`.
+  - **Excel serial numbers** are converted only in date-named columns, never in
+    count columns such as "Days Past Due".
+  - **Amounts** must match strict US or EU thousands grouping. A bare number counts
+    as money only with a currency marker or a money-named column. `1,234` and
+    `1.234` are flagged `ambiguous_separator`.
+- **Alternatives:** dateutil-style lenient parsing, which silently picks an
+  interpretation; or keep only the cleaned value.
+- **Why:** The review queue and the evals can see exactly which values were
+  inferred. Tests caught two such bugs: phone numbers read as amounts, and a day
+  count read as a date.
+- **Consequences:** Resolving ambiguous and partial dates, for example a missing
+  year taken from a "Period" column, belongs to extraction or the pack, not ingest.
+
+## D-020: Re-ingest is keyed on pack, path and content hash
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted
+- **Context:** Running ingest twice must be safe. But identical bytes under two names
+  is a real duplicate signal, not a reason to drop a file.
+- **Choice:** `source_files` is unique on `(pack, path, sha256)`.
+  - Same path and same content: skipped.
+  - Same path, new content: stored as a new version.
+  - Same content under another path: stored, with `meta.identical_to` listing the
+    twin paths.
+- **Alternatives:** Unique on the content hash alone (would silently drop the
+  planted exact-copy PDFs), or on path alone (loses file versions).
+- **Why:** Idempotent runs, with exact duplicates left visible for reconciliation.
+- **Consequences:** Milestone 5 can treat `identical_to` as a strong duplicate
+  signal.
+
+## D-021: Detect encodings without adding a dependency
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted
+- **Context:** Inputs mix UTF-8, UTF-8 with a BOM, and Latin-1. Email attachments
+  sometimes declare no charset.
+- **Choice:** Try UTF-8 with a BOM, then strict UTF-8, then cp1252, then Latin-1
+  (which never fails), and record the result. Text attachments are decoded from
+  their bytes the same way, instead of trusting the MIME charset.
+- **Alternatives:** charset-normalizer or chardet (statistical guessing, plus a
+  dependency).
+- **Why:** UTF-8 validation is strict enough to tell UTF-8 from the legacy
+  encodings reliably, and the order is easy to reason about. A test caught the
+  attachment case: a vCard with no charset had its "ü" mangled.
+- **Consequences:** Non-Western legacy encodings, such as Shift-JIS, would come out
+  as cp1252 text. Add a detector if a real dataset needs one.
+
+## D-022: Hand-written migrations, checked against the models
+- **Date:** 2026-10-11 · **Milestone:** 2 · **Status:** Accepted
+- **Context:** Migrations and models can drift apart.
+- **Choice:** Alembic migrations live in `migrations/versions/`, written by hand
+  (autogenerate is allowed as a starting point). A test runs Alembic's
+  `compare_metadata` against a freshly migrated database and fails on any
+  difference. Another test downgrades to base and upgrades again.
+- **Alternatives:** `Base.metadata.create_all()` without migrations, or trusting
+  autogenerate.
+- **Why:** Schema changes are reviewable and reversible, and drift fails CI.
+- **Consequences:** Every model change needs a new revision in the same commit.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-None right now.
+None right now. Milestone 3 will raise how structured sources
+(CSV/XLSX/JSON) are mapped to schema fields: LLM-proposed column mappings cached
+once per file, versus per-row extraction.
