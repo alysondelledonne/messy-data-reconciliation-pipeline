@@ -46,6 +46,14 @@ cp .env.example .env         # then fill in values; .env is gitignored
 The first `pre-commit` run builds gitleaks with Go, which takes about a minute.
 After that it is cached.
 
+> **macOS: keep the repo out of iCloud-synced folders** (Desktop, Documents). iCloud
+> marks files there as hidden, and Python 3.12 skips hidden `.pth` files. That
+> breaks the editable install, so you get `ModuleNotFoundError: No module named
+> 'pipeline'`. To check, run
+> `ls -lO .venv/lib/python3.12/site-packages/*.pth` and look for `hidden`.
+> Fix: move the repo, e.g. to `~/code`, then `rm -rf .venv && uv sync`. Or, after
+> every sync, run `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`.
+
 ## Generate the messy corpus (M1)
 
 ```bash
