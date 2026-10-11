@@ -46,5 +46,7 @@ def ingest_paths(
 ) -> list[IngestedFile]:
     out = []
     for root, p in iter_files(inputs, exclude):
-        out.append(ingest_bytes(p.relative_to(root).as_posix(), p.read_bytes()))
+        f = ingest_bytes(p.relative_to(root).as_posix(), p.read_bytes())
+        f.meta["root"] = str(root.resolve())  # lets later stages reopen the file (vision, UI)
+        out.append(f)
     return out

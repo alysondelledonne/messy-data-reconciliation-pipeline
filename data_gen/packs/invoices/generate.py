@@ -190,11 +190,13 @@ def _pdf_expected(p: PrintedInvoice, layout: str) -> dict[str, Any]:
         "vendor_name": p.vendor_name,
         "invoice_number": p.invoice_number,
         "invoice_date": p.invoice_date.isoformat(),
-        "currency": p.currency,
         "line_items": lines,
         "tax": f"{p.tax:.2f}",
         "total": f"{p.total:.2f}",
     }
+    # Only claim a currency the page actually shows: a symbol, a code, or an "amounts in" note.
+    if spec.money_style in ("symbol", "code", "eu", "eu_code") or spec.currency_note:
+        exp["currency"] = p.currency
     if spec.print_due_date:
         exp["due_date"] = p.due_date.isoformat()
     if spec.print_subtotal:

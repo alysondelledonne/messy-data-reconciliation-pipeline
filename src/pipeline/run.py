@@ -2,6 +2,7 @@
 
 uv run python -m pipeline.run db upgrade
 uv run python -m pipeline.run ingest --pack invoices data/generated/invoices [--dry-run]
+uv run python -m pipeline.run extract --pack invoices [--limit N] [--estimate]
 """
 
 import argparse
@@ -78,6 +79,31 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 1 if any(f.status == "error" for f in files) else 0
 
 
+def cmd_extract(args: argparse.Namespace) -> int:
+    from pipeline.config import get_settings
+    from pipeline.extract.runner import Extractor, estimate
+    from pipeline.store.db import make_engine, make_session
+
+    settings = get_settings()
+    with make_session(make_engine()) as session:
+        if args.estimate:
+            print(estimate(session, args.pack, settings, args.limit))
+            return 0
+        if settings.anthropic_api_key is None:
+            print(
+                "ANTHROPIC_API_KEY is not set (add it to .env). "
+                "Use --estimate to preview without calling the API.",
+                file=sys.stderr,
+            )
+            return 2
+        from pipeline.extract.client import AnthropicLLMClient
+
+        client = AnthropicLLMClient(settings)
+        extractor = Extractor(session, client, args.pack, settings, files_root=args.files_root)
+        print(extractor.run(limit=args.limit).summary())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pipeline", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -95,6 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     ing.add_argument("--exclude", action="append", default=[], help="extra filename glob to skip")
     ing.add_argument("--dry-run", action="store_true", help="parse and summarize; store nothing")
     ing.set_defaults(func=cmd_ingest)
+
+    ext = sub.add_parser("extract", help="extract schema records from raw_records with Claude")
+    ext.add_argument("--pack", required=True)
+    ext.add_argument("--limit", type=int, help="process at most N documents (mapped rows always)")
+    ext.add_argument("--estimate", action="store_true", help="estimate calls and cost; no API")
+    ext.add_argument("--files-root", type=Path, help="where source files live, for scanned PDFs")
+    ext.set_defaults(func=cmd_extract)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -16,3 +16,8 @@ def test_settings_read_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_api_key_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert Settings(_env_file=None).anthropic_api_key is None
+
+
+def test_blank_api_key_counts_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    assert Settings(_env_file=None).anthropic_api_key is None

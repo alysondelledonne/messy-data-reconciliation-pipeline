@@ -43,3 +43,18 @@ def test_ingest_stores_into_database(
         engine.dispose()
     finally:
         get_settings.cache_clear()
+
+
+def test_extract_estimate_and_missing_key(
+    db_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        assert main(["extract", "--pack", "contacts", "--estimate"]) == 0
+        assert "estimated" in capsys.readouterr().out
+        assert main(["extract", "--pack", "contacts"]) == 2
+        assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
+    finally:
+        get_settings.cache_clear()

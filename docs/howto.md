@@ -200,11 +200,105 @@ uv run python -m pipeline.run db downgrade base && uv run python -m pipeline.run
   CI, `REQUIRE_DB=1` makes them fail instead (D-017).
 - To point them somewhere else, set `TEST_DATABASE_URL`.
 
+## Extract records with Claude (M3)
+
+### 1. Add your API key
+Put `ANTHROPIC_API_KEY=sk-ant-...` in `.env`. It's gitignored, and gitleaks blocks
+committing keys. CI never needs a key; it uses a fake client (D-027).
+
+### 2. Start from a clean, current corpus
+If you regenerated the corpus since your last ingest (generator 1.1.0 fixed
+ground-truth bugs and renamed some contacts files), reset the database, because
+ingest doesn't track deleted files:
+
+```bash
+uv run python -m data_gen
+uv run python -m pipeline.run db downgrade base
+uv run python -m pipeline.run db upgrade
+uv run python -m pipeline.run ingest --pack invoices data/generated/invoices
+uv run python -m pipeline.run ingest --pack contacts data/generated/contacts
+```
+
+### 3. Estimate before spending (no API calls)
+```bash
+uv run python -m pipeline.run extract --pack invoices --estimate
+uv run python -m pipeline.run extract --pack contacts --estimate
+```
+This prints the number of calls, a token range and a cost range for Haiku plus
+escalations. It's a rough guide; real numbers land in `llm_calls`.
+
+### 4. A small live run first
+```bash
+uv run python -m pipeline.run extract --pack invoices --limit 5
+```
+- Mapped rows (CSV, XLSX, JSON, DOCX tables) are always processed. They cost one
+  call per header layout.
+- `--limit` caps the documents that each need their own call.
+- The run prints results by status and method, escalations, API calls, cache hits
+  and the cost of this run.
+
+### 5. The full run
+```bash
+uv run python -m pipeline.run extract --pack invoices
+uv run python -m pipeline.run extract --pack contacts
+```
+- Re-running is free: finished raw records are skipped, and any repeated request is
+  answered from `llm_calls`.
+- Scanned PDFs are read from disk. If the corpus moved since ingest, pass
+  `--files-root data/generated/invoices`.
+- Model choice and tuning are in `.env`: `EXTRACT_MODEL`, `ESCALATION_MODEL`,
+  `EXTRACT_EFFORT`, `CONFIDENCE_THRESHOLD`, `EXTRACT_WORKERS` (see `.env.example`).
+
+### Inspect results and cost
+```bash
+docker compose exec postgres psql -U pipeline -d pipeline
+```
+
+```sql
+-- Spend by pack, model and purpose
+SELECT pack, model_served, purpose, count(*) AS calls, sum(input_tokens) AS input_tokens,
+       sum(output_tokens) AS output_tokens, round(sum(cost_usd), 4) AS usd
+FROM llm_calls GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- Outcomes and escalations
+SELECT er.pack, er.method, er.status, count(*), sum(er.escalated::int) AS escalated
+FROM extraction_results er GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- Why documents were escalated
+SELECT sf.path, er.model, er.reasons
+FROM extraction_results er JOIN raw_records r ON r.id = er.raw_record_id
+JOIN source_files sf ON sf.id = r.source_file_id
+WHERE er.escalated ORDER BY sf.path LIMIT 20;
+
+-- Extracted invoices with evidence
+SELECT sf.path, x.fields->>'vendor_name' AS vendor, x.fields->>'invoice_number' AS number,
+       x.fields->>'total' AS total, x.field_meta->'total'->>'evidence' AS total_evidence
+FROM extracted_records x JOIN extraction_results er ON er.id = x.result_id
+JOIN raw_records r ON r.id = er.raw_record_id JOIN source_files sf ON sf.id = r.source_file_id
+WHERE er.pack = 'invoices' AND er.method = 'llm' LIMIT 10;
+
+-- Weakest values (what the review queue will show in M4/M6)
+SELECT sf.path, f.key AS field, f.value->>'final_confidence' AS conf, f.value->'flags' AS flags
+FROM extracted_records x JOIN extraction_results er ON er.id = x.result_id
+JOIN raw_records r ON r.id = er.raw_record_id JOIN source_files sf ON sf.id = r.source_file_id,
+     jsonb_each(x.field_meta) f
+WHERE (f.value->>'final_confidence')::numeric < 0.6 AND x.fields->>f.key IS NOT NULL
+ORDER BY conf LIMIT 20;
+
+-- The column mappings Claude proposed
+SELECT signature, columns, mapping->'model' AS model, mapping->'mappings' FROM column_mappings;
+```
+
+### Re-extract
+- **Clear results but keep the cache:** `DELETE FROM extraction_results;`. The next
+  run rebuilds everything from `llm_calls` at no cost.
+- **Pay for fresh answers:** bump `PROMPT_VERSION` in `src/pipeline/extract/prompts.py`.
+  Do this whenever the prompts change meaning.
+
 ---
 
 ## Planned (not yet available)
 
-- **Extract, validate, reconcile** (M3–M5): CLI commands from
-  `src/pipeline/run.py`.
+- **Validate, reconcile** (M4–M5): CLI commands from `src/pipeline/run.py`.
 - **Run the app** (M6): Streamlit.
 - **Run evals** (M7): the harness and where its results are saved.

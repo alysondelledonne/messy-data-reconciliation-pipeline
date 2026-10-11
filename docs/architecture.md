@@ -40,14 +40,14 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | Component | Location | Responsibility | Status |
 |---|---|---|---|
 | Data generator | `data_gen/` | Shared format writers, plus one generator per pack; writes the corpus, ground truth and a hash manifest | **Built (M1)** |
-| Domain packs | `src/pipeline/domains/<pack>/` | Target model, aliases, rules, entity keys | **Schemas built (M1)**: `Invoice`, `Contact`, plus a registry. Rules and keys come later |
+| Domain packs | `src/pipeline/domains/<pack>/` | Target model, extraction guidance, rules, entity keys | **Schemas (M1) and extraction guidance (M3) built**: `PackInfo` registry. Rules and keys come later |
 | Ingest | `src/pipeline/ingest/` | Format adapters → raw records; encodings, dates, amounts normalized next to the original values; exact source locations | **Built (M2)** |
-| Extract | `src/pipeline/extract/` | Claude structured output driven by the schema, per-field confidence and evidence, cache by content hash, token and cost log, model escalation | Planned (M3) |
+| Extract | `src/pipeline/extract/` | Claude structured outputs generated from the pack schema; per-field confidence and evidence, evidence check against the source; column mappings for structured rows; cache plus token and cost log in `llm_calls`; Haiku → Opus escalation | **Built (M3)**; live accuracy measured in M7 |
 | Validate | `src/pipeline/validate/` | Pack rules plus confidence → `auto_approved` / `needs_review` / `rejected`, with reasons | Planned (M4) |
 | Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz), dedupe across sources, record linking, field-level conflicts | Planned (M5) |
-| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest tables built (M2)**; extraction, reconciliation and audit tables come later |
+| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest (M2) and extraction (M3) tables built**; reconciliation and audit tables come later |
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
-| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`; later stages add commands | **Built (M2)** for db + ingest |
+| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]` | **Built** for db, ingest (M2) and extract (M3) |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
 | Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | Planned (M7) |
 | Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally and as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
@@ -146,6 +146,43 @@ and `flags`. The acceptance test (`tests/test_ingest_corpus.py`) checks that eve
 ground-truth occurrence in both packs is covered by exactly one data record, and
 that normalized dates and amounts match the truth.
 
+## Extraction (Milestone 3)
+
+```mermaid
+flowchart TB
+    RR[("raw_records<br/>(latest version of each file)")] --> K{kind?}
+    K -->|total_row, heading, note, malformed| SK["skipped<br/>(result kept for traceability)"]
+    K -->|row, table_row, json_object| SIG["group by header layout"]
+    K -->|document, email part, paragraph, log line| DOC["document request<br/>numbered text, or the PDF itself for scans"]
+    SIG --> MAP["mapping request (one per layout)<br/>columns + samples + distinct values + file context"]
+    MAP --> CC["CachedCaller<br/>llm_calls cache → thread pool → log tokens and cost"]
+    DOC --> CC
+    CC --> H["Claude Haiku 5.5"]
+    H -->|refusal / still broken after retry /<br/>low confidence / ungrounded| O["Claude Opus 5.5<br/>(server-side refusal fallback)"]
+    H --> I["interpret: check each field against the schema,<br/>check evidence against the source"]
+    O --> I
+    MAP -.-> AM["apply_mapping per row<br/>(normalized cells, transforms, value maps, constants)"]
+    I --> ER[("extraction_results · extracted_records")]
+    AM --> ER
+```
+
+| Module | Role |
+|---|---|
+| `extract/schema.py` | Pack Pydantic model → structured-output schema (`{records: [{field: {value, confidence, evidence}}]}`) and the mapping schema; checks each field value against the pack schema |
+| `extract/prompts.py` | System prompts (document, mapping), numbered content, PDF document blocks; `PROMPT_VERSION` |
+| `extract/client.py` | `LLMClient` interface, `AnthropicLLMClient` (structured outputs, `cache_control`, fallbacks for the escalation model, status handling), `cost_usd` |
+| `extract/core.py` | Pure logic: interpret responses, evidence check, escalation reasons, mapping parsing and application |
+| `extract/transforms.py` | Mapping transforms: dates, amounts, name splitting, E.164, ISO country |
+| `extract/runner.py` | `Extractor`: pending records → mappings and documents → retries, escalation → storage; `estimate()` |
+| `tests/fakes.py` | Fake LLM for CI, built from ground truth, with scriptable failures (D-027) |
+
+Per-field metadata on every extracted record (`extracted_records.field_meta`):
+`confidence` (model or mapping), `final_confidence` (after the evidence and flag
+penalties), `evidence`, `grounded` (true, false, or null for scans), and `flags`
+such as `grounding_failed`, `invalid_value`, `missing_year`,
+`inferred_from_amount_currency` and `file_level_constant`. Record-level flags
+include `missing_required:<field>`.
+
 ## Data model
 
 Migration `0001` (`migrations/versions/0001_ingest_tables.py`):
@@ -192,6 +229,64 @@ erDiagram
     }
 ```
 
+Migration `0002` (`migrations/versions/0002_extraction_tables.py`):
+
+```mermaid
+erDiagram
+    raw_records ||--o{ extraction_results : "extracted by version"
+    extraction_results ||--o{ extracted_records : yields
+    extraction_results }o--o| column_mappings : "via mapping"
+    column_mappings }o--o| llm_calls : "proposed by"
+    raw_records ||--o{ llm_calls : "about"
+    llm_calls {
+        int id PK
+        string cache_key UK "null for failed calls"
+        string pack
+        string purpose "document | column_mapping"
+        string prompt_version
+        string model_requested
+        string model_served
+        string status "ok | refusal | max_tokens | invalid | error"
+        int input_tokens
+        int output_tokens
+        int cache_read_tokens
+        int cache_write_tokens
+        numeric cost_usd
+        int latency_ms
+        jsonb response
+    }
+    column_mappings {
+        int id PK
+        string pack
+        string signature
+        string prompt_version
+        jsonb columns
+        jsonb mapping
+    }
+    extraction_results {
+        int id PK
+        int raw_record_id FK
+        string extractor_version "prompt version + schema hash"
+        string method "llm | column_mapping | skipped"
+        string status "ok | empty | failed | skipped"
+        string model
+        bool escalated
+        jsonb reasons
+        jsonb llm_call_ids
+    }
+    extracted_records {
+        int id PK
+        int result_id FK
+        int record_index
+        jsonb fields
+        jsonb field_meta
+        jsonb flags
+    }
+```
+
+- `extraction_results` is unique on `(raw_record_id, extractor_version)`: re-running
+  only processes new raw records. A new prompt or schema version re-extracts
+  everything, mostly answered from the `llm_calls` cache.
 - `source_files` is unique on `(pack, path, sha256)`: re-ingesting is a no-op, and
   identical content under another path is stored with `meta.identical_to` (D-020).
 - `meta` holds per-format details: preamble lines, header row, sheet names,
@@ -209,5 +304,10 @@ erDiagram
   nothing extra.
 - **Secrets:** read from `.env` and never committed; gitleaks runs as a pre-commit
   hook.
-- **Testing:** every module has tests. CI uses a mocked LLM client, so it needs no
-  API key. Engine tests run against more than one pack.
+- **Testing:** every module has tests. CI uses a fake LLM client built from ground
+  truth, so it needs no API key. Engine tests run against both packs.
+- **Cost control:** small model first, a response cache keyed on content, column
+  mappings instead of per-row calls, `--estimate` before spending, and per-call
+  costs in `llm_calls`.
+- **Known limitation:** ingest doesn't track deleted files. A file removed from the
+  source folder stays "current" until the database is reset.

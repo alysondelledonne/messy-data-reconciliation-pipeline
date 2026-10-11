@@ -1,7 +1,13 @@
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import pytest
 
 from data_gen.build import build
 from data_gen.ground_truth import GroundTruth
+
+if TYPE_CHECKING:
+    from pipeline.ingest.models import IngestedFile
 
 SEED = 42
 
@@ -14,6 +20,31 @@ def corpus() -> dict[str, bytes]:
 
 def load_gt(corpus: dict[str, bytes], pack: str) -> GroundTruth:
     return GroundTruth.model_validate_json(corpus[f"{pack}/ground_truth.json"])
+
+
+@pytest.fixture(scope="session")
+def ingested(corpus: dict[str, bytes]) -> "dict[str, IngestedFile]":
+    """Every corpus file run through ingest (in memory), keyed by corpus path."""
+    import fnmatch
+
+    from pipeline.ingest.ingest import DEFAULT_EXCLUDE, ingest_bytes
+
+    out = {}
+    for path, data in sorted(corpus.items()):
+        name = path.rsplit("/", 1)[-1]
+        if not any(fnmatch.fnmatch(name, pat) for pat in DEFAULT_EXCLUDE):
+            out[path] = ingest_bytes(path, data)
+    return out
+
+
+@pytest.fixture(scope="session")
+def corpus_dir(corpus: dict[str, bytes], tmp_path_factory: pytest.TempPathFactory) -> "Path":
+    """The corpus written to disk once (for code that reopens source files)."""
+    from data_gen.build import write
+
+    root = tmp_path_factory.mktemp("corpus") / "generated"
+    write(corpus, root)
+    return root
 
 
 @pytest.fixture(scope="session")

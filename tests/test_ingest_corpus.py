@@ -5,28 +5,15 @@ occurrence) is covered by an ingested record from the same file. If ingest loses
 or misplaces anything, it fails.
 """
 
-import fnmatch
 from collections import defaultdict
 from typing import Any
 
 import pytest
 
 from data_gen.ground_truth import GroundTruth, Occurrence
-from pipeline.ingest.ingest import DEFAULT_EXCLUDE, ingest_bytes
 from pipeline.ingest.models import IngestedFile, RawRecord, location_covers
 
 NON_DATA_KINDS = {"total_row", "stray_note", "sheet_text", "heading", "malformed_line"}
-
-
-@pytest.fixture(scope="session")
-def ingested(corpus: dict[str, bytes]) -> dict[str, IngestedFile]:
-    out = {}
-    for path, data in sorted(corpus.items()):
-        name = path.rsplit("/", 1)[-1]
-        if any(fnmatch.fnmatch(name, pat) for pat in DEFAULT_EXCLUDE):
-            continue
-        out[path] = ingest_bytes(path, data)
-    return out
 
 
 def _covering(f: IngestedFile, occ: Occurrence) -> list[RawRecord]:

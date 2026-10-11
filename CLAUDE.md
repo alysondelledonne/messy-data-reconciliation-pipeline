@@ -63,14 +63,15 @@ Ingest → Extract (Claude) → Validate → Reconcile → Postgres → Streamli
 - **Ingest:** one adapter per format loads files into a `raw_records` table and
   normalizes encodings, dates and amounts. Every record keeps its *source location*:
   file plus row, sheet/cell, page, line, or email part.
-- **Extract:** Anthropic Python SDK with structured output. The domain pack's
-  Pydantic model is passed to the model as a tool via its JSON schema. Each field
-  comes back with a confidence score and the evidence text used. Text sources send
+- **Extract:** Anthropic Python SDK with structured outputs (D-024). A JSON schema
+  generated from the domain pack's Pydantic model is the required response format.
+  Each field comes back with a confidence score and the evidence text used, and
+  the evidence is checked against the source (D-028). Text sources send numbered
   text; scanned PDFs send the PDF directly. Retry on malformed output, cache by
-  content hash, and log tokens and cost per document. Use a smaller Claude model by
-  default and escalate hard documents to a larger one. Read model names from config.
-  How structured sources (CSV/Excel/JSON) differ from unstructured ones will be
-  decided at Milestone 3.
+  content hash, and log tokens and cost per call in `llm_calls` (D-026). Claude
+  Haiku 5.5 by default, escalating hard documents to Claude Opus 5.5 (D-025). Model
+  names come from config. Structured sources (CSV/XLSX/JSON/DOCX tables) use a
+  model-proposed column mapping, made once per header layout (D-023).
 - **Validate:** each domain pack provides rule checks; the engine combines them with
   model confidence into a status (`auto_approved` / `needs_review` / `rejected`) plus
   human-readable reasons.
@@ -102,9 +103,10 @@ Frankfurter/ECB client (D-007).
 ### Stack
 
 Python 3.12, uv, Pydantic v2, anthropic SDK, pdfplumber, pypdf, openpyxl,
-python-docx, pandas, reportlab + Pillow (for the generator), rapidfuzz, tenacity,
+python-docx, pandas, reportlab + Pillow (for the generator), rapidfuzz,
 SQLAlchemy + Alembic, Postgres 16, Streamlit, pytest, ruff, mypy, pre-commit, Docker
-Compose, GitHub Actions. Emails use the standard library's `email` package.
+Compose, GitHub Actions. Emails use the standard library's `email` package. tenacity
+was dropped because the SDK retries transport errors itself (D-027).
 
 ### Repo layout
 

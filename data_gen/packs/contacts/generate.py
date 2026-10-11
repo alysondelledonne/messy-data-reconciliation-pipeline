@@ -271,17 +271,19 @@ def _view(
     if not canonical and rng.random() < 0.08:
         email = email[0].upper() + email[1:]
     country_text = rng.choice(COUNTRY_SPELLINGS[p.city.country])
+    # Decide once per field: the written text and `expected` must agree.
+    kept = {f: keep(f) for f in ("email", "phone", "company", "title", "city", "country")}
     return _View(
         first=first,
         last=p.last,
-        email=email if keep("email") else None,
-        phone=_e164(phone_text) if keep("phone") else None,
-        phone_text=phone_text if keep("phone") else None,
-        company=company if keep("company") else None,
-        title=title if keep("title") else None,
-        city=p.city.name if keep("city") else None,
-        country_text=country_text if keep("country") else None,
-        country=p.city.country if keep("country") else None,
+        email=email if kept["email"] else None,
+        phone=_e164(phone_text) if kept["phone"] else None,
+        phone_text=phone_text if kept["phone"] else None,
+        company=company if kept["company"] else None,
+        title=title if kept["title"] else None,
+        city=p.city.name if kept["city"] else None,
+        country_text=country_text if kept["country"] else None,
+        country=p.city.country if kept["country"] else None,
         defects=defects,
     )
 

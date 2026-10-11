@@ -405,10 +405,142 @@ Entry template:
 - **Why:** Schema changes are reviewable and reversible, and drift fails CI.
 - **Consequences:** Every model change needs a new revision in the same commit.
 
+## D-023: Structured sources go through a column mapping proposed once per header layout
+- **Date:** 2026-10-11 · **Milestone:** 3 · **Status:** Accepted (owner)
+- **Context:** CSV, XLSX, DOCX table rows and JSON objects are already split into
+  columns at ingest, with typed values next to the originals. Sending every row to
+  the model would cost about 90× more calls for little gain.
+- **Choice:**
+  - For each distinct header layout (column list, or flattened JSON key set), the
+    model sees the columns, up to 8 sample rows, the distinct values of
+    low-cardinality columns, and file context such as report titles and sheet
+    names. It proposes, per target field, a column, a transform (`copy`, `date`,
+    `amount`, `split_name_first/last`, `phone_e164`, `country_iso2`), a value map
+    for enum fields, or a file-level constant.
+  - The mapping is cached in `column_mappings`.
+  - Rows are then read deterministically: values come from ingest's normalized
+    cells, confidence is the mapping's confidence reduced for flags such as
+    `ambiguous_day_month` or `filled_down`, and evidence is `Column: cell`.
+- **Alternatives:** One model call per row, which copes better with odd cells but
+  costs far more.
+- **Why:** About 10 mapping calls instead of about 900 row calls. The result is
+  deterministic and easy to explain, and inferred values stay flagged. Testing
+  showed the need for file-level constants: an aging report's title ("Open Items")
+  is the only place that says every row is unpaid.
+- **Consequences:** Cells that combine several fields in one column aren't split
+  beyond names. A row whose date has no year comes out with a null date flagged
+  `missing_year`; using a "Period" column to fill the year is left to later stages.
+
+## D-024: Structured outputs, not a forced tool call
+- **Date:** 2026-10-11 · **Milestone:** 3 · **Status:** Accepted (owner); supersedes the
+  brief's "schema as a tool"
+- **Context:** The brief said to pass the Pydantic schema as a tool. Forcing a tool
+  call (`tool_choice` any/tool) returns a 400 on Claude Opus 5.5 and Sonnet 5.5, so it
+  would break on escalation.
+- **Choice:** Send the schema as `output_config.format` (`json_schema`), which works
+  on every model we use. The schema is still generated from the pack's Pydantic
+  model. Every field is wrapped as `{value, confidence, evidence}` inside
+  `{records: [...]}`. Decimals travel as strings and enums as `enum`; every object
+  has `additionalProperties: false` and every property is required but nullable.
+  Values are checked field by field against the pack schema, and an invalid value
+  becomes null, flagged `invalid_value`.
+- **Alternatives:** A strict tool with `tool_choice: auto`, plus retrying when the
+  model doesn't call it.
+- **Why:** The same schema-driven contract with fewer moving parts and a guaranteed
+  JSON shape.
+- **Consequences:** Citations can't be combined with structured outputs, so evidence
+  comes from the model's own quotes, checked by D-028.
+
+## D-025: Claude Haiku 5.5 by default, escalating to Claude Opus 5.5
+- **Date:** 2026-10-11 · **Milestone:** 3 · **Status:** Accepted (owner)
+- **Context:** The brief asks for a smaller model by default and escalation for hard
+  documents.
+- **Choice:**
+  - `EXTRACT_MODEL=claude-haiku-5-5` and `ESCALATION_MODEL=claude-opus-5-5`, both
+    at effort `medium`. All of this is configurable.
+  - Every call goes to the default model first. Broken output (invalid JSON,
+    `max_tokens`, API error) gets one retry. A request escalates on a refusal (Haiku
+    has no server-side fallback), on output still broken after the retry, on a
+    present required value below `CONFIDENCE_THRESHOLD` (0.6), or when more than a
+    third of values fail the evidence check.
+  - A missing required value is **not** an escalation trigger. It means the model
+    is saying "not stated", so it's flagged `missing_required:<field>` for the
+    validation stage. (A compact invoice layout really never prints its currency.)
+  - Escalation calls opt into server-side refusal fallbacks (`fallbacks: "default"`).
+- **Alternatives:** Sonnet 5.5 as the escalation model (half the price), or one
+  model for everything.
+- **Why:** Most documents are routine. Spending Opus prices only on the hard ones
+  keeps a full run cheap: the estimate is $0.25–$0.85 on Haiku plus escalations.
+  Real costs will come from the first live run.
+- **Consequences:** The escalation rate and threshold need tuning against the evals
+  in Milestone 7. The cost per model is visible in `llm_calls`.
+
+## D-026: Model responses are cached and costed in Postgres (`llm_calls`)
+- **Date:** 2026-10-11 · **Milestone:** 3 · **Status:** Accepted (owner)
+- **Context:** Re-runs must not pay twice, and the UI and evals need token and cost
+  data.
+- **Choice:**
+  - Every call is logged with requested and served model, status, stop reason,
+    input, output and cache tokens, USD cost (from configurable list prices),
+    latency and the parsed response.
+  - Successful calls carry a cache key: a SHA-256 of the prompt version, model,
+    effort, system prompt, schema and content. A matching key is answered from the
+    table.
+  - Failed calls get a null key, so a retry really calls the model again.
+  - The system prompt also carries `cache_control` for API-side prompt caching.
+- **Alternatives:** A JSON file cache in `.cache/`.
+- **Why:** One store that can be queried for cost per pack and model and for cache
+  hit rate, and that the Overview page and the evals can read.
+- **Consequences:** Bumping `PROMPT_VERSION` deliberately invalidates the cache. The
+  system prompt is likely below the minimum size for API prompt caching, so the main
+  saving comes from our own cache.
+
+## D-027: Calls are concurrent, and CI uses a fake LLM built from ground truth
+- **Date:** 2026-10-11 · **Milestone:** 3 · **Status:** Accepted
+- **Context:** About 450 sequential calls would take a long time. Tests must run
+  without a key.
+- **Choice:**
+  - `LLMClient` is a small interface. The real implementation calls the Anthropic
+    SDK, which retries 429s, 5xx and connection errors itself. Calls run on
+    `EXTRACT_WORKERS` (8) threads.
+  - Tests use `tests/fakes.py`, which answers document requests with the
+    ground-truth `expected` values (quoting their printed form as evidence) and
+    mapping requests with a column-name rulebook. Tests can also script refusals,
+    broken output and low confidence.
+  - tenacity is dropped from the stack, because the SDK's retries cover transport
+    errors.
+- **Alternatives:** Recorded API responses (cassettes): more realistic, but they need
+  a key to record and go stale whenever the prompt changes.
+- **Why:** The whole stage, including caching, retries, escalation and storage, runs
+  end to end in CI on the real corpus.
+- **Consequences:** The fake proves plumbing and mapping logic, not model quality.
+  Accuracy numbers come only from live runs (Milestone 7).
+  - Building the fake found three bugs in the generator's ground truth, all fixed in
+    generator 1.1.0: a currency claimed for an invoice layout that never prints
+    one, and phone and country fields whose text and `expected` were decided by
+    separate random draws.
+
+## D-028: Every value's evidence is checked against the source text
+- **Date:** 2026-10-11 · **Milestone:** 3 · **Status:** Accepted
+- **Context:** A model can return confident values that aren't in the document.
+- **Choice:** After parsing, each value's evidence quote (or, failing that, the value
+  itself, or its digits when there are 6 or more) must appear in the source text
+  after normalizing case and whitespace.
+  - If it doesn't, confidence is halved and the value is flagged
+    `grounding_failed`.
+  - Scans have no text to check against, so they get `grounded: null`.
+  - Mapped values count as grounded, because they come straight from cells.
+- **Alternatives:** Trust the model's confidence alone, or use citations (which can't
+  be combined with structured outputs).
+- **Why:** It costs nothing and catches made-up values, and its rate is an
+  escalation trigger (D-025).
+- **Consequences:** A model that reformats without quoting the printed form gets
+  penalized. The prompt asks for exact quotes for that reason.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-None right now. Milestone 3 will raise how structured sources
-(CSV/XLSX/JSON) are mapped to schema fields: LLM-proposed column mappings cached
-once per file, versus per-row extraction.
+None right now. Next up, Milestone 4: validation rules per pack, and how rule
+results combine with field confidence into `auto_approved` / `needs_review` /
+`rejected`.
