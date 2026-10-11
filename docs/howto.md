@@ -121,9 +121,9 @@ docker compose ps             # wait for "healthy"
 docker compose down           # stop; add -v to delete the data volume
 ```
 
-> Note: as of Milestone 1, `docker compose config` is verified, but the container
-> hasn't been started in the build environment (Docker Hub rate limit). Nothing
-> uses the database until Milestone 2.
+Expect `docker compose ps` to show `(healthy)` after about 5–10 seconds, and `psql`
+(`docker compose exec postgres psql -U pipeline -d pipeline -c 'select version();'`)
+to print `PostgreSQL 16.x`.
 
 ---
 

@@ -50,7 +50,7 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | CLI | `src/pipeline/run.py` | Run each stage or the whole pipeline | Planned |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
 | Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | Planned (M7) |
-| Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally; CI runs ruff, mypy, pytest and a gitleaks history scan | **Built (M1)**. Compose config validated, but not yet started live (Docker Hub rate limit) |
+| Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally; CI runs ruff, mypy, pytest and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
 
 ## Synthetic corpus (Milestone 1)
 
