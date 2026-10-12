@@ -758,6 +758,9 @@ Entry template:
   stay in charge.
 - **Consequences:** The review UI (Milestone 6) lists pending pairs and writes
   `human:` decisions.
+  - The owner confirmed 0.8 after the first live run (2026-10-12): 1 invoice pair and
+    6 contact pairs came back below it and wait for a human. A wrong merge costs more
+    than a review.
 
 ## D-037: Failed extraction results are retried on the next run
 - **Date:** 2026-10-12 · **Milestone:** 5 · **Status:** Accepted
