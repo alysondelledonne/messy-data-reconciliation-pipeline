@@ -246,7 +246,22 @@ On the seed-42 corpus with the fake LLM:
   namesakes are merged.
 
 These figures are a test of the logic with a perfect extractor, not a measure of the
-live system; Milestone 7 measures that.
+live system.
+
+First live run (the owner's, 2026-10-12, real Claude extraction, seed-42 corpus,
+`evals.reconcile_check`):
+- **Invoices:** 694 extracted records become 302 golden records, all pure; 298 of 300
+  invoices are in exactly one. No vendor pairs are wrongly merged or split. Golden field
+  accuracy: PO number, subtotal, tax and due date 100%; total 99.7%; currency and
+  payment status 99.6%; invoice date 98.7%; vendor name, invoice number 98.3%; line
+  items 98.0%. The misses come from extraction: a misread scanned invoice number splits
+  one invoice, and some long line-item tables come back empty.
+- **Contacts:** 681 extracted records become 318 golden records, all pure; 283 of 300
+  people are in exactly one. No namesakes or lookalike companies are merged; 6 company
+  pairs the model wasn't sure about wait for a human. Field accuracy 94–99%.
+- Cost of this run: extraction $0.72 for both packs; entity adjudication under $0.01.
+
+Milestone 7 turns this into the repeatable eval.
 
 ## Data model
 
