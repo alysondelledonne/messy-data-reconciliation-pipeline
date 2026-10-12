@@ -4,6 +4,7 @@ uv run python -m pipeline.run db upgrade
 uv run python -m pipeline.run ingest --pack invoices data/generated/invoices [--dry-run]
 uv run python -m pipeline.run extract --pack invoices [--limit N] [--estimate]
 uv run python -m pipeline.run validate --pack invoices
+uv run python -m pipeline.run reconcile --pack invoices [--no-llm]
 """
 
 import argparse
@@ -115,6 +116,24 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    from pipeline.config import get_settings
+    from pipeline.extract.client import AnthropicLLMClient, LLMClient
+    from pipeline.reconcile.engine import reconcile_pack
+    from pipeline.store.db import make_engine, make_session
+
+    settings = get_settings()
+    client: LLMClient | None = None
+    if settings.match_llm and not args.no_llm:
+        if settings.anthropic_api_key is None:
+            print("ANTHROPIC_API_KEY not set: close name matches go to human review.")
+        else:
+            client = AnthropicLLMClient(settings)
+    with make_session(make_engine()) as session:
+        print(reconcile_pack(session, args.pack, settings, client).summary())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pipeline", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -143,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
     val = sub.add_parser("validate", help="apply pack rules and confidence checks -> statuses")
     val.add_argument("--pack", required=True)
     val.set_defaults(func=cmd_validate)
+
+    rec = sub.add_parser("reconcile", help="entities, golden records, conflicts, statuses")
+    rec.add_argument("--pack", required=True)
+    rec.add_argument("--no-llm", action="store_true", help="send close name matches to review")
+    rec.set_defaults(func=cmd_reconcile)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

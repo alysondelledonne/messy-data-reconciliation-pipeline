@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # Validation (D-031): a present value below this goes to human review. Kept above
     # confidence_threshold: values in between aren't worth the bigger model but deserve a look.
     review_confidence: float = 0.75
+    # Reconciliation (D-033, D-036)
+    match_auto: float = 92.0  # normalized-name score to merge without review
+    match_review: float = 80.0  # below this, names are different organizations
+    match_llm: bool = True  # let the small model adjudicate the band in between
+    match_llm_confidence: float = 0.8  # below this the model's verdict goes to human review
     prices: dict[str, ModelPrice] = DEFAULT_PRICES
 
     @field_validator("anthropic_api_key", "anthropic_workspace_id", mode="before")

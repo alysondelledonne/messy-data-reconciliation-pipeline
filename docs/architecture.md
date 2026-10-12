@@ -40,16 +40,16 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | Component | Location | Responsibility | Status |
 |---|---|---|---|
 | Data generator | `data_gen/` | Shared format writers, plus one generator per pack; writes the corpus, ground truth and a hash manifest | **Built (M1)** |
-| Domain packs | `src/pipeline/domains/<pack>/` | Target model, extraction guidance, validation rules, entity keys | **Schemas (M1), extraction guidance (M3) and rules (M4) built**: `PackInfo` registry. Entity keys come in M5 |
+| Domain packs | `src/pipeline/domains/<pack>/` | Target model, extraction guidance, validation rules, entity keys and survivorship policies | **Built**: schemas (M1), extraction guidance (M3), rules (M4), reconciliation specs (M5) in a `PackInfo` registry |
 | Ingest | `src/pipeline/ingest/` | Format adapters → raw records; encodings, dates, amounts normalized next to the original values; exact source locations | **Built (M2)** |
 | Extract | `src/pipeline/extract/` | Claude structured outputs generated from the pack schema; per-field confidence and evidence, evidence check against the source; column mappings for structured rows; cache plus token and cost log in `llm_calls`; Haiku → Opus escalation | **Built (M3)**; live accuracy measured in M7 |
 | Validate | `src/pipeline/validate/` | Pack rules plus generic extraction checks → `auto_approved` / `needs_review` / `rejected`, with readable reasons | **Built (M4)**; per source, before reconciliation (D-029) |
-| Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz), dedupe across sources, record linking, field-level conflicts | Planned (M5) |
-| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest (M2), extraction (M3) and validation (M4) tables built**; reconciliation and audit tables come later |
+| Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz plus a lookalike guard, close calls to Claude or a human), record linking across sources, survivorship per field, conflicts, re-validated golden records | **Built (M5)** |
+| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest (M2), extraction (M3), validation (M4) and reconciliation (M5) tables built**; the audit trail for human corrections comes in M6 |
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
-| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]`, `validate` | **Built** for db, ingest (M2), extract (M3) and validate (M4) |
+| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]`, `validate`, `reconcile [--no-llm]` | **Built** for db, ingest (M2), extract (M3), validate (M4) and reconcile (M5) |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
-| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (field accuracy of extractions so far) built in M3; full harness planned (M7) |
+| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (extraction field accuracy, M3) and `reconcile_check.py` (linking purity, entity pairs, golden field accuracy, M5) built; full harness planned (M7) |
 | Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally and as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
 
 ## Synthetic corpus (Milestone 1)
@@ -208,6 +208,46 @@ missing invoice reference, every date without a year, every partial contact name
 every UK national phone number go to review. Every clean text PDF that states its
 currency is auto-approved.
 
+## Reconciliation (Milestone 5)
+
+```mermaid
+flowchart LR
+    C[("current extracted records<br/>minus rejected, with validation findings<br/>and a source date")] --> NG["name groups<br/>normalized spelling + evidence keys"]
+    NG --> J{"judge pairs<br/>≥92 no guard → merge<br/>shared evidence ≥70 → merge<br/>80–92 / guarded / disjoint evidence → gray"}
+    J -->|gray| ADJ["adjudicate<br/>stored decision (human first) →<br/>Claude {same, confidence} → pending"]
+    ADJ --> MD[("match_decisions")]
+    J --> E[("entities<br/>canonical + aliases")]
+    ADJ --> E
+    E --> L["link records<br/>strong keys → soft blocks → name only<br/>(compatible only; ambiguous stays alone)"]
+    L --> S["survivorship per field<br/>variants grouped, pack policy picks"]
+    S --> RV["re-validate + cluster checks"]
+    RV --> G[("golden_records + record_links")]
+```
+
+| Module | Role |
+|---|---|
+| `reconcile/names.py` | Normalization, similarity, lookalike guard (D-033) |
+| `reconcile/entities.py` | Name groups, pair verdicts, clustering that won't chain across lookalikes, canonical names |
+| `reconcile/survive.py` | Variant grouping and per-field policies → `FieldChoice` with provenance (D-035) |
+| `reconcile/types.py` | `Candidate`, `ReconcileSpec` (what a pack declares) |
+| `reconcile/engine.py` | Loading, source dates, adjudication, record linking, golden records, `reconcile_pack` |
+| `domains/<pack>/reconcile.py` | The pack's keys, compatibility, policies, trust, cluster checks |
+| `evals/reconcile_check.py` | Scores a run against ground truth (no API calls) |
+
+On the seed-42 corpus with the fake LLM:
+- **Invoices:** 694 extracted records become 300 golden records, all pure, and every
+  true invoice is in exactly one of them. All 26 vendors are found and no lookalikes
+  are merged. All 25 planted PDF-only invoices are flagged `not_in_ap_register`, and
+  the 5 stale payment statuses resolve to the register's value with a conflict
+  review.
+- **Contacts:** 687 extracted records become 303 golden records, all pure; 297 of
+  the 300 people are in exactly one. The 3 that stay split have no last name or
+  nothing in common with their other records. All 36 companies are found and no
+  namesakes are merged.
+
+These figures are a test of the logic with a perfect extractor, not a measure of the
+live system; Milestone 7 measures that.
+
 ## Data model
 
 Migration `0001` (`migrations/versions/0001_ingest_tables.py`):
@@ -323,10 +363,60 @@ JSONB list of `{rule, severity, message, fields}`), unique on
   page count, email headers.
 - Deleting a source file cascades to its raw records.
 
+Migration `0004` (`migrations/versions/0004_reconciliation.py`):
+
+```mermaid
+erDiagram
+    entities ||--o{ golden_records : "belongs to"
+    golden_records ||--o{ record_links : "built from"
+    extracted_records ||--o{ record_links : "linked by"
+    entities {
+        int id PK
+        string pack
+        string kind "vendor | company"
+        string canonical_name
+        string normalized
+        jsonb aliases "[{name, count}]"
+    }
+    golden_records {
+        int id PK
+        string pack
+        int entity_id FK "set null"
+        jsonb fields
+        jsonb provenance "field -> {rule, winner, support, alternatives, variants}"
+        jsonb conflicts "[{field, chosen, rule, chosen_sources, alternatives}]"
+        string status
+        jsonb findings
+        int source_count
+    }
+    record_links {
+        int id PK
+        int golden_id FK "cascade"
+        int extracted_record_id FK "cascade"
+        string reason "seed | num | po | email | phone | soft | name_only"
+    }
+    match_decisions {
+        int id PK
+        string pack
+        string kind "entity"
+        string a "normalized name"
+        string b
+        string decision "same | different | pending"
+        string decided_by "human:... | llm:... | system"
+        float confidence
+        text reason
+    }
+```
+
+- `match_decisions` is unique on `(pack, kind, a, b)` and survives rebuilds; golden
+  records, links and entities are rebuilt on every run (D-034).
+
 ## Cross-cutting concerns
 
 - **Traceability:** every value carries its source location from ingest through to
   the UI: `source_files.path` plus `raw_records.location` (see the table above).
+  A golden record's `provenance` names the extracted records behind each field, and
+  `record_links` leads from those to their sources.
   `pipeline.ingest.models.location_covers()` relates a record's location to a finer
   one, such as a line inside a document or a mention inside a paragraph.
 - **Determinism:** the generator is seeded and checked by a manifest-hash test

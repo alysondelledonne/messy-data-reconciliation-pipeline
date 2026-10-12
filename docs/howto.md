@@ -349,13 +349,88 @@ GROUP BY v.id, sf.path, r.location ORDER BY sf.path LIMIT 20;
 
 Expect a large share of invoice reviews to come from gaps in a single source: a
 legacy CSV row with no currency marker, a procurement row without an invoice number,
-an ambiguous `04/03/24` date. Reconciliation (M5) can fill many of these from other
+an ambiguous `04/03/24` date. Reconciliation (M5) fills many of these from other
 sources for the same invoice (D-029).
+
+## Reconcile into golden records (M5)
+
+Run after `validate`, which reconciliation needs so it can leave out rejected records:
+
+```bash
+uv run python -m pipeline.run reconcile --pack invoices
+uv run python -m pipeline.run reconcile --pack contacts
+```
+- It takes a few seconds. It rebuilds the pack's entities and golden records from
+  scratch each time, so re-run it after any extract or validate.
+- Close name matches (for example "Bluewater Holdings" vs "Bluewater Holding Group")
+  go to Claude Haiku. Expect a handful of calls and a fraction of a cent. Answers
+  are cached and stored in `match_decisions`, so a re-run asks nothing new.
+- `--no-llm`, `MATCH_LLM=false`, or no API key: close matches stay `pending`, the
+  names are kept apart, and their golden records go to review.
+- Tuning (in `.env`): `MATCH_AUTO` (92), `MATCH_REVIEW` (80), `MATCH_LLM_CONFIDENCE`
+  (0.8).
+- The summary shows golden records, entities, close calls and their cost, link
+  reasons, statuses, conflicts per field and review reasons.
+
+If you regenerated the corpus (generator 1.3.0 changed the contacts files), reset and
+re-run from ingest as in "Start from a clean, current corpus" above. Re-extracting
+contacts makes new API calls for the changed files only; the invoices files are
+unchanged and come from the cache.
+
+### Check against ground truth (no API calls)
+```bash
+uv run python -m evals.reconcile_check --pack invoices
+uv run python -m evals.reconcile_check --pack contacts --show 20
+```
+Prints how many golden records are pure (one true record each), how many true
+records landed in exactly one golden record, entity pairs merged correctly or
+wrongly, and golden field accuracy against the clean truth.
+
+### Look at the results
+```sql
+-- Golden records by status
+SELECT pack, status, count(*), sum((source_count > 1)::int) AS multi_source
+FROM golden_records GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- Entities and the spellings merged into them
+SELECT pack, canonical_name, jsonb_array_length(aliases) AS spellings, aliases
+FROM entities ORDER BY pack, spellings DESC;
+
+-- Cross-source conflicts, field by field
+SELECT g.pack, c->>'field' AS field, c->>'chosen' AS chosen, c->>'rule' AS rule,
+       c->'alternatives' AS lost
+FROM golden_records g, jsonb_array_elements(g.conflicts) c ORDER BY 1, 2 LIMIT 30;
+
+-- Why golden records need review
+SELECT pack, f->>'rule' AS rule, count(*), min(f->>'message') AS example
+FROM golden_records, jsonb_array_elements(findings) f
+WHERE f->>'severity' = 'review' GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+
+-- Where one golden record's values came from
+SELECT g.id, g.fields->>'invoice_number' AS number, l.reason, sf.path, r.location
+FROM golden_records g JOIN record_links l ON l.golden_id = g.id
+JOIN extracted_records x ON x.id = l.extracted_record_id
+JOIN extraction_results er ON er.id = x.result_id JOIN raw_records r ON r.id = er.raw_record_id
+JOIN source_files sf ON sf.id = r.source_file_id
+WHERE g.pack = 'invoices' AND g.source_count > 2 ORDER BY g.id LIMIT 20;
+
+-- Close name matches and who decided them
+SELECT pack, a, b, decision, decided_by, confidence, reason FROM match_decisions ORDER BY 1, 2;
+```
+
+### Decide a close match yourself
+Until the review UI (M6) exists, update the row directly. Names are stored normalized
+(legal suffixes such as "Group" dropped), with `a` sorting before `b`. A `human:`
+decision is never overwritten by the model, and the next `reconcile` uses it:
+
+```sql
+UPDATE match_decisions SET decision = 'different', decided_by = 'human:me'
+WHERE pack = 'contacts' AND a = 'bluewater holding' AND b = 'bluewater holdings';
+```
 
 ---
 
 ## Planned (not yet available)
 
-- **Reconcile** (M5): CLI command from `src/pipeline/run.py`.
 - **Run the app** (M6): Streamlit.
 - **Run evals** (M7): the harness and where its results are saved.

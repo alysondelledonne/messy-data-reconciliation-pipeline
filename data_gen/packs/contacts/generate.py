@@ -100,6 +100,7 @@ class _Person:
     old_phone: str | None = None
     old_company: Company | None = None
     old_email: str | None = None
+    change_date: date | None = None  # sources dated before this show the old values
     occurrences: list[Occurrence] = field(default_factory=list)
 
     def truth(self) -> Contact:
@@ -177,6 +178,8 @@ def _make_people(cfg: ContactsConfig, rng: random.Random) -> list[_Person]:
                 p.old_company = old
                 p.old_email = _email(first, last, old.domain, patterns[old.company_id])
                 p.old_title = rng.choice(JOB_TITLES)
+            span = (cfg.end - cfg.start).days
+            p.change_date = cfg.start + timedelta(days=rng.randint(120, span - 120))
         people.append(p)
     return people
 
@@ -230,7 +233,7 @@ def _view(
     fields: tuple[str, ...] = ("email", "phone", "company", "title", "city", "country"),
     p_nick: float = 0.1,
     p_alias: float = 0.25,
-    p_stale: float = 0.35,
+    when: date | None = None,
     p_drop: float = 0.0,
     p_typo: float = 0.03,
     canonical: bool = False,
@@ -239,7 +242,10 @@ def _view(
     first = p.first
     if not canonical and first in NICKNAMES and rng.random() < p_nick:
         first, defects = NICKNAMES[first], [*defects, "nickname"]
-    stale = not canonical and p.has_history and rng.random() < p_stale
+    # Values change on the person's change date: a source dated before it shows the old ones.
+    stale = (
+        not canonical and p.change_date is not None and when is not None and when < p.change_date
+    )
     company_obj = p.old_company if stale and p.old_company else p.company
     title = p.old_title if stale and p.old_title else p.title
     phone = p.old_phone if stale and p.old_phone else p.phone
@@ -368,8 +374,10 @@ def _build_eml(cfg: ContactsConfig, people: list[_Person], out: PackOutput, seed
     senders = rng.sample(people, cfg.n_eml_senders)
     for i in range(1, cfg.n_eml + 1):
         p = rng.choice(senders)
-        v = _view(p, rng, fields=("phone", "company", "title", "city"), p_drop=0.25)
         when = _when(cfg, rng)
+        v = _view(
+            p, rng, fields=("phone", "company", "title", "city"), p_drop=0.25, when=when.date()
+        )
         subject = rng.choice(SUBJECTS).format(
             q=rng.randint(1, 4), thing=rng.choice(THINGS), day=when.strftime("%A")
         )
@@ -395,8 +403,15 @@ def _build_eml(cfg: ContactsConfig, people: list[_Person], out: PackOutput, seed
         quoted: _Person | None = None
         if rng.random() < cfg.reply_chain_share:
             quoted = rng.choice([q for q in people if q is not p])
-            qv = _view(quoted, rng, fields=("phone", "company", "title"), p_drop=0.4, p_typo=0)
             qwhen = when - timedelta(days=rng.randint(1, 20), minutes=rng.randint(0, 600))
+            qv = _view(
+                quoted,
+                rng,
+                fields=("phone", "company", "title"),
+                p_drop=0.4,
+                p_typo=0,
+                when=qwhen.date(),
+            )
             body += ["", f"On {format_datetime(qwhen)}, {qv.name()} <{quoted.email}> wrote:"]
             qbody = [*rng.sample(BODY_LINES, 2), "", *_signature(qv, rng)]
             body += ["> " + line if line else ">" for line in qbody]
@@ -444,14 +459,21 @@ def _build_docx(cfg: ContactsConfig, people: list[_Person], out: PackOutput, see
         if kind == "contact_sheet":
             doc.add_heading(rng.choice(["Key Contacts", "Vendor & Partner Contact List",
                                         "Contacts: Building Ops"]), level=1)  # fmt: skip
-            doc.add_paragraph(f"Last updated {_when(cfg, rng):%B %Y}. Internal use only.")
+            updated = _when(cfg, rng)
+            doc.add_paragraph(f"Last updated {updated:%B %Y}. Internal use only.")
             table = doc.add_table(rows=1, cols=5)
             table.style = rng.choice(["Table Grid", "Light List Accent 1", "Light Shading"])
             for cell, h in zip(table.rows[0].cells, ["Name", "Title", "Company", "Phone",
                                                      "Email"], strict=True):  # fmt: skip
                 cell.text = h
             for r, p in enumerate(group, 1):
-                v = _view(p, rng, fields=("email", "phone", "company", "title"), p_drop=0.15)
+                v = _view(
+                    p,
+                    rng,
+                    fields=("email", "phone", "company", "title"),
+                    p_drop=0.15,
+                    when=updated.date().replace(day=1),
+                )
                 style = rng.choices(["normal", "last_first"], [3, 1])[0]
                 row = table.add_row().cells
                 values = [v.name(style), v.title or "", v.company or "", v.phone_text or "",
@@ -465,10 +487,11 @@ def _build_docx(cfg: ContactsConfig, people: list[_Person], out: PackOutput, see
         elif kind == "attendees":
             thing = rng.choice(THINGS)
             doc.add_heading(f"Meeting: {thing[0].upper()}{thing[1:]}", level=2)
-            doc.add_paragraph(f"Date: {_when(cfg, rng):%d %B %Y}")
+            met = _when(cfg, rng)
+            doc.add_paragraph(f"Date: {met:%d %B %Y}")
             parts = []
             for p in group:
-                v = _view(p, rng, fields=("company", "title"), p_drop=0.3)
+                v = _view(p, rng, fields=("company", "title"), p_drop=0.3, when=met.date())
                 extra = ", ".join(x for x in (v.title, v.company) if x)
                 parts.append(f"{v.name()} ({extra})" if extra else v.name())
                 _occ(p, source, "docx", {"paragraph": 2, "mention": len(parts)}, v.expected(),
@@ -477,11 +500,19 @@ def _build_docx(cfg: ContactsConfig, people: list[_Person], out: PackOutput, see
             doc.add_paragraph("Agenda: scope review, schedule, next steps.")
         else:
             doc.add_heading("Project Kickoff Memo", level=1)
+            memo_date = _when(cfg, rng)
+            doc.add_paragraph(f"Date: {memo_date:%B %d, %Y}")
             doc.add_paragraph(
                 f"Re: {rng.choice(THINGS)}. The following people are the points of contact."
             )
             for p in group:
-                v = _view(p, rng, fields=("email", "phone", "company", "title"), p_drop=0.2)
+                v = _view(
+                    p,
+                    rng,
+                    fields=("email", "phone", "company", "title"),
+                    p_drop=0.2,
+                    when=memo_date.date(),
+                )
                 bits = [v.name()]
                 if v.title or v.company:
                     bits.append(", ".join(x for x in (v.title, v.company) if x))
@@ -517,7 +548,7 @@ def _build_notes(cfg: ContactsConfig, people: list[_Person], out: PackOutput, se
             lines += [f"{when:%m/%d/%Y} call notes", ""]
         for p in group:
             v = _view(p, rng, fields=("email", "phone", "company", "title"), p_drop=0.35,
-                      p_stale=0.5)  # fmt: skip
+                      when=when.date())  # fmt: skip
             partial = md and rng.random() < 0.3
             name = v.name("partial") if partial else v.name()
             defects = [*v.defects, "partial_name"] if partial else v.defects
@@ -584,7 +615,9 @@ def _build_jsonl_and_log(
             dup_budget -= 1
         else:
             p = rng.choice(people)
-        v = _view(p, rng, fields=("email", "phone", "company", "country"), p_drop=0.25)
+        v = _view(
+            p, rng, fields=("email", "phone", "company", "country"), p_drop=0.25, when=when.date()
+        )
         shape = rng.randrange(3)
         lines.append(json.dumps(_jsonl_record(v, when, shape), ensure_ascii=bool(shape == 1)))
         exp = v.expected()
@@ -621,7 +654,7 @@ def _build_jsonl_and_log(
             ]))  # fmt: skip
             continue
         p = rng.choice(people)
-        v = _view(p, rng, fields=("email", "phone", "company"), p_drop=0.3)
+        v = _view(p, rng, fields=("email", "phone", "company"), p_drop=0.3, when=when.date())
         fmt = rng.randrange(3)
         if fmt == 0:
             kv = [f'name="{v.name()}"']
@@ -660,7 +693,7 @@ def _build_crm(
               "Title", "Mailing City", "Mailing Country"]  # fmt: skip
     entries: list[tuple[_Person, list[str], dict[str, Any], list[str]]] = []
     for p in members:
-        v = _view(p, rng, p_drop=0.1, p_stale=0.25)
+        v = _view(p, rng, p_drop=0.1, when=cfg.end)  # the export is current
         row = [f"CRM-{int(p.record_id[4:]) * 7 + 1000:06d}", v.first or "", v.last or "",
                v.email or "", v.phone_text or "", v.company or "", v.title or "", v.city or "",
                v.country_text or ""]  # fmt: skip
@@ -673,7 +706,7 @@ def _build_crm(
                            (p, list(row), dict(exp), [*defects, "duplicate",
                                                       "exact_duplicate_row"]))  # fmt: skip
         else:
-            v = _view(p, rng, p_nick=0.9, p_drop=0.3, p_stale=0)
+            v = _view(p, rng, p_nick=0.9, p_drop=0.3, when=cfg.end)
             row2 = [f"CRM-{int(p.record_id[4:]) * 7 + 5000:06d}", v.first or "", v.last or "",
                     v.email or "", v.phone_text or "", v.company or "", v.title or "",
                     v.city or "", v.country_text or ""]  # fmt: skip

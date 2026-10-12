@@ -212,3 +212,78 @@ class Validation(Base):
     status: Mapped[str] = mapped_column(String(16))  # auto_approved | needs_review | rejected
     findings: Mapped[list[dict[str, Any]]] = mapped_column(default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# --- reconciliation (migration 0004) -------------------------------------------------------
+
+
+class Entity(Base):
+    """A canonical organization (vendor, company) and the spellings it appeared as."""
+
+    __tablename__ = "entities"
+    __table_args__ = (Index("ix_entities_pack", "pack"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pack: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(32))
+    canonical_name: Mapped[str] = mapped_column(Text)
+    normalized: Mapped[str] = mapped_column(Text)
+    aliases: Mapped[list[dict[str, Any]]] = mapped_column(default=list)  # [{name, count}]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GoldenRecord(Base):
+    """One real-world record, merged from every source that mentions it (D-034)."""
+
+    __tablename__ = "golden_records"
+    __table_args__ = (Index("ix_golden_records_pack_status", "pack", "status"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pack: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[int | None] = mapped_column(ForeignKey("entities.id", ondelete="SET NULL"))
+    fields: Mapped[dict[str, Any]]
+    provenance: Mapped[dict[str, Any]]  # field -> {winner, rule, support, alternatives}
+    conflicts: Mapped[list[dict[str, Any]]] = mapped_column(default=list)
+    status: Mapped[str] = mapped_column(String(16))
+    findings: Mapped[list[dict[str, Any]]] = mapped_column(default=list)
+    source_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    links: Mapped[list["RecordLink"]] = relationship(
+        back_populates="golden", cascade="all, delete-orphan"
+    )
+
+
+class RecordLink(Base):
+    """Which extracted records a golden record was built from, and why they were joined."""
+
+    __tablename__ = "record_links"
+    __table_args__ = (Index("ix_record_links_extracted", "extracted_record_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    golden_id: Mapped[int] = mapped_column(ForeignKey("golden_records.id", ondelete="CASCADE"))
+    extracted_record_id: Mapped[int] = mapped_column(
+        ForeignKey("extracted_records.id", ondelete="CASCADE")
+    )
+    reason: Mapped[str] = mapped_column(String(64))
+
+    golden: Mapped[GoldenRecord] = relationship(back_populates="links")
+
+
+class MatchDecision(Base):
+    """A decision on whether two names are the same organization. Survives re-runs:
+    human decisions beat the model's, and pending rows form the review queue (D-036)."""
+
+    __tablename__ = "match_decisions"
+    __table_args__ = (UniqueConstraint("pack", "kind", "a", "b", name="uq_match_decisions_pair"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pack: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))  # entity
+    a: Mapped[str] = mapped_column(Text)  # normalized names, a < b
+    b: Mapped[str] = mapped_column(Text)
+    decision: Mapped[str] = mapped_column(String(16))  # same | different | pending
+    decided_by: Mapped[str] = mapped_column(String(64))  # human:<name> | llm:<model> | system
+    confidence: Mapped[float | None]
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,3 +1,3 @@
 """Seeded generator for the messy multi-format corpus and its ground truth."""
 
-GENERATOR_VERSION = "1.2.0"
+GENERATOR_VERSION = "1.3.0"

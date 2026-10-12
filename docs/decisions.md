@@ -623,11 +623,147 @@ Entry template:
     one. And the subtotal-less "statement" layout needed the totals rule to fall
     back to the line items, or one planted bad total was missed.
 
+## D-033: Entity matching: normalized names, a lookalike guard, evidence, thresholds 92/80
+- **Date:** 2026-10-12 · **Milestone:** 5 · **Status:** Accepted (owner)
+- **Context:** Vendor and company names come with typos, abbreviations, missing legal
+  suffixes and cut-off text. The packs also plant genuinely different organizations
+  with confusingly similar names (D-004). Name similarity alone scores "Bluewater
+  Holdings" vs "Bluewater Holding Group" at 97.
+- **Choice:**
+  - **Normalize** (`reconcile/names.py`): fold accents and case, `&` becomes "and",
+    expand common abbreviations (Svcs, Mech, Contr…), drop trailing legal suffixes
+    and cut-off single letters.
+  - **Score** with rapidfuzz: the better of `token_sort_ratio` and `ratio`.
+  - **Lookalike guard:** words in one name with no counterpart in the other
+    (typos, truncations and abbreviations count as counterparts). "Elevator" vs
+    "Electrical" or "Partners" vs "Advisors" is guarded.
+  - **Evidence** from the pack: identifiers that prove two spellings are one
+    organization when shared, and identifier families that suggest different
+    organizations when they don't overlap. Invoices use invoice numbers and their
+    letter prefix; contacts use email domains.
+  - **Decision:**
+    - merge at ≥ 92 with no guard;
+    - merge from 70 with shared evidence and no guard;
+    - send 80–92, guarded pairs and pairs with disjoint evidence to adjudication
+      (D-036);
+    - keep separate below 80.
+  - **Clustering:** merges are applied best score first. A merge is refused if it
+    would put two names judged separate or still undecided into one cluster, so an
+    alias can't bridge two lookalikes.
+  - **Canonical name:** well-formed (mixed case), of the most-mentioned name (not a
+    typo of it), without abbreviations, with its legal suffix, seen on the
+    organization's own documents, then the most common.
+- **Alternatives:** Similarity only, at one threshold (lookalikes merge or typos
+  split, depending on the threshold). Embeddings (a dependency and cost for names
+  that rapidfuzz handles). The LLM on every pair (a few hundred calls for what rules
+  settle).
+- **Why:** Rules settle the easy 95%. Evidence and the guard catch the dangerous
+  pairs before they reach a threshold.
+- **Consequences:** Thresholds are settings (`MATCH_AUTO`, `MATCH_REVIEW`). On the
+  seed-42 corpus with the fake model, entity pairs are 100% right in both packs.
+  Milestone 7 measures this properly.
+
+## D-034: Golden records, record links and entities as tables
+- **Date:** 2026-10-12 · **Milestone:** 5 · **Status:** Accepted (owner)
+- **Context:** The brief asks for a deduplicated table where every value is traced
+  to its source, with conflicts reported field by field.
+- **Choice:** Migration 0004 adds:
+  - `entities`: canonical name plus every alias with its count;
+  - `golden_records`: the chosen fields, `provenance` per field (rule, winning
+    record, supporting records, alternatives, spelling variants), `conflicts`, a
+    status and findings, and the number of sources;
+  - `record_links`: golden record → extracted record, with the reason it joined
+    (seed, invoice number, email, phone, soft match, name only);
+  - `match_decisions`: one row per adjudicated name pair (D-036).
+  Reconciliation deletes and rebuilds a pack's golden records and entities on every
+  run; match decisions are kept.
+- **Linking** (`link_records`):
+  1. equal strong keys join (invoice number or PO within a vendor; email; E.164
+     phone), if the records are compatible;
+  2. within a soft-key block (same vendor and total; same company and name), records
+     join if they match and are compatible with every member of the other cluster;
+  3. a record too sparse for a soft key (no company named) joins the single cluster
+     that shares its name.
+  A record that fits two clusters which can't be one record (namesakes, two invoice
+  numbers) stays alone and gets an `ambiguous_match` review finding.
+  Compatibility is per pack: different invoice numbers are two invoices; different
+  email addresses (not a one-key typo) or names that disagree are two people.
+  Phone numbers prove nothing either way: old sources carry old numbers, and the
+  corpus has a number that passed from one person to another.
+- **Alternatives:** Columns on `extracted_records` (no place for conflicts or
+  provenance). Incremental reconciliation (more code; a full rebuild takes 3 s per
+  pack).
+- **Why:** Rebuilding is idempotent and simple, and provenance makes every value
+  explainable in the review UI.
+- **Consequences:** Human corrections to golden records (Milestone 6) must be stored
+  apart from them, keyed so that they survive a rebuild.
+
+## D-035: Survivorship policies declared per pack
+- **Date:** 2026-10-12 · **Milestone:** 5 · **Status:** Accepted (owner)
+- **Context:** When linked sources disagree, the right winner depends on the field.
+- **Choice:** Each pack's `ReconcileSpec` names a policy per field:
+  - `amount` (invoice totals, subtotal, tax): most sources, then arithmetically
+    consistent sources, then trust;
+  - `system_of_record` (payment status): the AP register, configured by a filename
+    pattern;
+  - `recent` (email, phone, job title, company): newest source;
+  - `majority` (identity fields), `richest` (line items), `entity` (canonical name).
+  Before a policy picks, values that mean the same thing are grouped as variants:
+  `LSC-3177` = `LSC3177`, `0117 4960 320` = `+441174960320`, Mike = Michael, an
+  email one keystroke off. Variants aren't conflicts, and the pack chooses which
+  form to show (`display_rank`).
+  - A national phone number gets the record's country code after survivorship
+    (`finalize`).
+  - **Dates for "recent":** a record's own date (row date, epoch timestamp, a quoted
+    email's header line), else a file date (email `Date:`, a document's `Date:` or
+    "Last updated" line, a note's first line, a date in the file name). An undated
+    CRM export is a current snapshot; other undated sources count as oldest.
+  - Conflicts on **material** fields (amounts, payment status, invoice date,
+    currency; contacts' last name) add a `source_conflict` review finding naming the
+    winner, the rule and the losing sources.
+  - The golden record is **re-validated** with the pack rules. Cluster checks add
+    `not_in_ap_register` (review), `no_document` (info), `duplicate_document`
+    (review) and `duplicate_row` (info). Source-level verdicts are kept.
+- **Alternatives:** One global rule (most recent, or most trusted format). Always
+  asking a human (the queue fills with conflicts the rules settle).
+- **Why:** Policies are domain knowledge and belong in the pack (D-004). The engine
+  stays generic.
+- **Consequences:** Generator 1.3.0 makes contact staleness depend on dates: each
+  person who changed jobs has a change date, and only sources dated before it show
+  the old title, phone or employer. Before this, a stale value could appear in a
+  source newer than the current one, and recency couldn't work. Changing contacts
+  files means re-extracting them (cached calls for unchanged files are reused).
+
+## D-036: Close calls go to Claude Haiku, then to a human; decisions are stored
+- **Date:** 2026-10-12 · **Milestone:** 5 · **Status:** Accepted (owner)
+- **Context:** Some name pairs can't be settled by rules (D-033). A wrong merge
+  corrupts records; a wrong split only adds review work.
+- **Choice:**
+  - Gray pairs are sent to the extraction model with structured outputs:
+    `{same, confidence, reason}`. The request includes the spellings, mention
+    counts, identifiers and identifier families, the similarity score and the
+    guarded words. It goes through the same cache and cost log (`llm_calls`,
+    purpose `entity_match`).
+  - Below `MATCH_LLM_CONFIDENCE` (0.8) the pair stays `pending`. Its golden records
+    get an `entity_match_pending` review finding and the names are kept separate.
+  - Every outcome is stored in `match_decisions` (`decided_by` = `llm:<model>`,
+    `system` or `human:<who>`). The next run reuses a stored decision instead of
+    asking again. A human decision is never overwritten.
+  - `reconcile --no-llm`, `MATCH_LLM=false`, or no API key: every gray pair waits
+    for a human.
+- **Alternatives:** Humans only (slow for the 2–12 pairs per pack seen here). The
+  model only, with no human route (no way to correct it).
+- **Why:** It's cheap (a fraction of a cent per run) and explainable, and people
+  stay in charge.
+- **Consequences:** The review UI (Milestone 6) lists pending pairs and writes
+  `human:` decisions.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-None right now. Milestone 5 (reconciliation) will need decisions on:
-- fuzzy-match thresholds for auto-merging versus sending a match to review;
-- which source wins a field conflict (most recent, most trusted format, or human);
-- re-validating merged records (see D-029).
+None right now. Milestone 6 (Streamlit UI) will need decisions on:
+- how a reviewer's correction to a golden record is stored so that it survives a
+  rebuild (D-034);
+- whether approving a golden record also approves its source records;
+- who may decide pending entity matches (D-036), and whether that needs a login.

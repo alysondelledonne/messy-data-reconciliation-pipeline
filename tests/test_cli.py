@@ -70,3 +70,17 @@ def test_validate_command(
         assert "validated" in capsys.readouterr().out
     finally:
         get_settings.cache_clear()
+
+
+def test_reconcile_command_without_a_key(
+    db_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        assert main(["reconcile", "--pack", "invoices"]) == 0
+        out = capsys.readouterr().out
+        assert "close name matches go to human review" in out and "golden records" in out
+    finally:
+        get_settings.cache_clear()

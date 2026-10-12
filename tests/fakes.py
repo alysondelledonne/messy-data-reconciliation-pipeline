@@ -120,7 +120,12 @@ class FakeLLM:
             if (resp := hook(request)) is not None:
                 return resp
         text = json.dumps(request.content)
-        data = self._mapping(request) if request.purpose == "column_mapping" else self._doc(request)
+        if request.purpose == "column_mapping":
+            data = self._mapping(request)
+        elif request.purpose == "entity_match":
+            data = self._entity_match(request)
+        else:
+            data = self._doc(request)
         return LLMResponse(
             "ok", data, request.model, "end_turn",
             input_tokens=len(text) // 4, output_tokens=len(json.dumps(data)) // 4, latency_ms=1,
@@ -143,6 +148,24 @@ class FakeLLM:
                 "reason": "report of open items",
             })  # fmt: skip
         return {"mappings": entries}
+
+    def entity_of(self, spelling: str) -> str | None:
+        """Ground-truth entity a spelling was planted for (by normalized name)."""
+        from pipeline.reconcile.names import normalize
+
+        norm = normalize(spelling)
+        for e in self.gt.entities:
+            if norm in {normalize(n) for n in (e.canonical_name, *e.aliases)}:
+                return e.entity_id
+        return None
+
+    def _entity_match(self, request: LLMRequest) -> dict[str, Any]:
+        ea = {self.entity_of(s) for s in request.meta["a_spellings"]} - {None}
+        eb = {self.entity_of(s) for s in request.meta["b_spellings"]} - {None}
+        if not ea or not eb:
+            return {"same": False, "confidence": 0.5, "reason": "fake: unknown spelling"}
+        same = bool(ea & eb)
+        return {"same": same, "confidence": 0.95, "reason": f"fake: ground truth says {same}"}
 
     def _doc(self, request: LLMRequest) -> dict[str, Any]:
         source = request.meta["source"]
