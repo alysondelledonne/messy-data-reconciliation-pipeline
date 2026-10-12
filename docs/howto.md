@@ -354,9 +354,12 @@ sources for the same invoice (D-029).
 
 ## Reconcile into golden records (M5)
 
-Run after `validate`, which reconciliation needs so it can leave out rejected records:
+Run after `validate`, which reconciliation needs so it can leave out rejected records.
+On an existing database, apply migration 0004 first (`relation "match_decisions" does
+not exist` means you skipped it):
 
 ```bash
+uv run python -m pipeline.run db upgrade
 uv run python -m pipeline.run reconcile --pack invoices
 uv run python -m pipeline.run reconcile --pack contacts
 ```
