@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from pipeline.config import Settings
@@ -241,14 +241,15 @@ def _file_context(sf: SourceFile, r: RawRecordRow) -> list[str]:
 def pending_records(
     session: Session, pack: str, version: str
 ) -> list[tuple[RawRecordRow, SourceFile]]:
-    """Raw records of the latest version of each file that this extractor hasn't seen."""
+    """Raw records of the latest version of each file that this extractor hasn't finished:
+    never seen, or failed last time (a failed call isn't cached, so it is retried)."""
     latest = (
         select(func.max(SourceFile.id))
         .where(SourceFile.pack == pack, SourceFile.status == "ok")
         .group_by(SourceFile.path)
     )
     done = select(ExtractionResult.raw_record_id).where(
-        ExtractionResult.extractor_version == version
+        ExtractionResult.extractor_version == version, ExtractionResult.status != "failed"
     )
     q = (
         select(RawRecordRow, SourceFile)
@@ -520,6 +521,13 @@ class Extractor:
         self.stats.by_method[method] += 1
         self.stats.records_extracted += len(records)
         self.stats.escalated += escalated
+        self.session.execute(  # a retry replaces the earlier failed result
+            delete(ExtractionResult).where(
+                ExtractionResult.raw_record_id == r.id,
+                ExtractionResult.extractor_version == self.version,
+                ExtractionResult.status == "failed",
+            )
+        )
         self.session.add(
             ExtractionResult(
                 raw_record_id=r.id,

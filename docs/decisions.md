@@ -758,6 +758,22 @@ Entry template:
 - **Consequences:** The review UI (Milestone 6) lists pending pairs and writes
   `human:` decisions.
 
+## D-037: Failed extraction results are retried on the next run
+- **Date:** 2026-10-12 · **Milestone:** 5 · **Status:** Accepted
+- **Context:** The owner's first live run hit an API error on the column-mapping calls.
+  The rows were stored with status `failed`, and `extract` treated any stored result as
+  done. Every later run skipped all 372 invoice rows (AP register, procurement export,
+  aging report), so every invoice looked unrecorded to reconciliation.
+- **Choice:** A raw record is pending until it has a result that isn't `failed`. When a
+  retry succeeds, it replaces the failed result for that raw record and extractor
+  version.
+- **Alternatives:** A `--retry-failed` flag (an easy step to forget, as here). Deleting
+  failed rows by hand (the howto already promised that re-running retries).
+- **Why:** Failed calls are never cached (D-026), so retrying costs only the calls that
+  failed, and a transient error can't leave data silently missing.
+- **Consequences:** A document the model refuses every time is re-sent on every run.
+  That's a few cents at most; `estimate` counts these documents as pending.
+
 ---
 
 ## Open decisions (waiting on the owner)

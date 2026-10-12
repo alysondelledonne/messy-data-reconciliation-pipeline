@@ -307,3 +307,37 @@ def test_estimate_makes_no_calls(db_session: Session, ingested: dict[str, Ingest
     text = estimate(db_session, "contacts", SETTINGS)
     assert "documents" in text and "estimated cost" in text
     assert db_session.scalar(select(func.count()).select_from(LLMCall)) == 0
+
+
+def test_failed_mappings_are_retried_on_the_next_run(
+    db_session: Session,
+    ingested: dict[str, IngestedFile],
+    invoices_gt: GroundTruth,
+    contacts_gt: GroundTruth,
+    corpus_dir: Path,
+) -> None:
+    # The first run's mapping calls fail (an API error, a bad key): the rows are recorded as
+    # failed, and the next run must try them again instead of treating them as done.
+    _load(db_session, ingested, "invoices")
+    fake = FakeLLM(_gts(invoices_gt, contacts_gt), "invoices")
+
+    def api_down(req: LLMRequest) -> LLMResponse | None:
+        if req.purpose == "column_mapping":
+            return LLMResponse("error", None, req.model, None, error="400: test")
+        return None
+
+    fake.overrides.append(api_down)
+    first = _extract(db_session, fake, "invoices", corpus_dir, limit=1)
+    assert first.by_status["failed"] > 300
+    fake.overrides.clear()
+    second = _extract(db_session, fake, "invoices", corpus_dir, limit=0)
+    assert second.by_status["ok"] > 300 and second.by_status["failed"] == 0
+    statuses = Counter(
+        db_session.scalars(
+            select(ExtractionResult.status).where(ExtractionResult.method == "column_mapping")
+        )
+    )
+    assert statuses["failed"] == 0  # replaced, not duplicated
+    assert db_session.scalar(select(func.count()).select_from(ExtractionResult)) == len(
+        set(db_session.scalars(select(ExtractionResult.raw_record_id)))
+    )
