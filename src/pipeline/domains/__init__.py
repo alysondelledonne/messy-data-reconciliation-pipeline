@@ -8,8 +8,11 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
+from pipeline.domains.contacts import rules as contact_rules
 from pipeline.domains.contacts.schema import Contact
+from pipeline.domains.invoices import rules as invoice_rules
 from pipeline.domains.invoices.schema import Invoice
+from pipeline.validate.types import Rule
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,8 @@ class PackInfo:
     schema: type[BaseModel]
     entity: str  # what one record is, for prompts ("vendor invoice")
     guidance: str = ""  # extra extraction guidance specific to this domain
+    rules: tuple[Rule, ...] = ()  # validation rules (D-030)
+    rules_version: str = "r0"  # bump when rules change meaning
 
 
 PACKS: dict[str, PackInfo] = {
@@ -27,6 +32,8 @@ PACKS: dict[str, PackInfo] = {
         "vendor invoice",
         "Extract the invoice as printed, even if its own totals do not add up. "
         "The bill-to party (our Accounts Payable) is not the vendor.",
+        rules=invoice_rules.RULES,
+        rules_version=invoice_rules.RULES_VERSION,
     ),
     "contacts": PackInfo(
         "contacts",
@@ -35,6 +42,8 @@ PACKS: dict[str, PackInfo] = {
         "Extract each distinct person mentioned with any contact details. Ignore our own "
         "organization's mailboxes (e.g. the recipient address of an email). Quoted email "
         "replies describe the quoted sender, not the current one.",
+        rules=contact_rules.RULES,
+        rules_version=contact_rules.RULES_VERSION,
     ),
 }
 

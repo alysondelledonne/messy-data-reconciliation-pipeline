@@ -58,3 +58,15 @@ def test_extract_estimate_and_missing_key(
         assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
     finally:
         get_settings.cache_clear()
+
+
+def test_validate_command(
+    db_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    get_settings.cache_clear()
+    try:
+        assert main(["validate", "--pack", "invoices"]) == 0
+        assert "validated" in capsys.readouterr().out
+    finally:
+        get_settings.cache_clear()

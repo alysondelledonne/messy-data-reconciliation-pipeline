@@ -26,6 +26,7 @@ class Base(DeclarativeBase):
         dict[str, Any]: JSONB,
         list[str]: JSONB,
         list[int]: JSONB,
+        list[dict[str, Any]]: JSONB,
     }
 
 
@@ -184,3 +185,30 @@ class ExtractedRecord(Base):
     flags: Mapped[list[str]] = mapped_column(default=list)
 
     result: Mapped[ExtractionResult] = relationship(back_populates="records")
+
+
+# --- validation (migration 0003) -----------------------------------------------------------
+
+
+class Validation(Base):
+    """Machine verdict for one extracted record under one validator version (D-032).
+
+    Recomputed on every `validate` run. Human decisions (Milestone 6) are stored
+    separately, so re-validating never overwrites them.
+    """
+
+    __tablename__ = "validations"
+    __table_args__ = (
+        UniqueConstraint("extracted_record_id", "validator_version", name="uq_validations_rec"),
+        Index("ix_validations_pack_status", "pack", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    extracted_record_id: Mapped[int] = mapped_column(
+        ForeignKey("extracted_records.id", ondelete="CASCADE")
+    )
+    pack: Mapped[str] = mapped_column(String(64))
+    validator_version: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16))  # auto_approved | needs_review | rejected
+    findings: Mapped[list[dict[str, Any]]] = mapped_column(default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -537,10 +537,97 @@ Entry template:
 - **Consequences:** A model that reformats without quoting the printed form gets
   penalized. The prompt asks for exact quotes for that reason.
 
+## D-029: Three statuses decided by finding severity
+- **Date:** 2026-10-12 · **Milestone:** 4 · **Status:** Accepted (owner)
+- **Context:** Every extracted record needs a status (`auto_approved`,
+  `needs_review` or `rejected`) with reasons a person can act on.
+- **Choice:**
+  - Each check produces findings with a severity: `reject`, `review` or `info`.
+  - Any `reject` finding means `rejected`; any `review` finding means
+    `needs_review`; otherwise the record is `auto_approved`.
+  - `reject` is reserved for records with nothing to identify them by: an invoice
+    with no vendor and no number, or no amount; a contact with no name, email or
+    phone.
+  - Each reason is a full sentence naming its fields, for example "Subtotal 250.00 +
+    tax 20.00 = 270.00, but the total says 300.00 (off by 30.00)."
+- **Alternatives:** A weighted score with cut-offs (harder to explain), or rejecting
+  every rule failure (loses records that a human could fix in seconds).
+- **Why:** The review queue can show exactly why each record is there, and
+  automatic rejection stays rare and obviously correct.
+- **Consequences:** These statuses are per source and come before reconciliation.
+  Many reviews are gaps that a second source can fill, such as a currency missing
+  from a legacy CSV row but printed on the PDF of the same invoice. Milestone 5
+  should re-validate merged records.
+
+## D-030: Rules live in the domain pack as pure functions
+- **Date:** 2026-10-12 · **Milestone:** 4 · **Status:** Accepted (owner)
+- **Context:** D-004: everything specific to a domain belongs to its pack, and the
+  engine stays generic.
+- **Choice:**
+  - Each pack has a `rules.py` listing `RULES`: functions from a `RecordView`
+    (values, per-field metadata, how the record was extracted) to a list of
+    findings. It also has a `RULES_VERSION`.
+  - Invoices: identifiable; line items sum to the subtotal; quantity × price = line
+    amount; subtotal (or the line items, when no subtotal is printed) + tax =
+    total; positive total and a 0–30% tax rate; plausible invoice and due dates.
+  - Contacts: identifiable; email format; E.164 phone; ISO country code; name shape
+    (abbreviated, odd characters; all caps is info only).
+  - The engine adds generic checks on the extraction itself: missing required
+    values, values that couldn't be read, dates with no year, low confidence,
+    evidence not found in the source, and a failed escalation.
+- **Alternatives:** A rules DSL or YAML config, or a rules engine library.
+- **Why:** Plain functions are trivial to test, read and extend, and a new pack
+  brings its own rules without touching the engine.
+- **Consequences:** Bump `RULES_VERSION` when a rule changes meaning.
+
+## D-031: Review threshold 0.75, above the escalation threshold 0.6
+- **Date:** 2026-10-12 · **Milestone:** 4 · **Status:** Accepted (owner)
+- **Context:** Extraction already escalates below 0.6 (D-025). Validation needs its
+  own bar for "trust without looking".
+- **Choice:** `REVIEW_CONFIDENCE=0.75`. A present value whose final confidence is
+  below it goes to review.
+  - Values between 0.6 and 0.75 are not worth paying the bigger model for, but they
+    do deserve a human look.
+  - Mapping penalties (D-023) land on the right side of the line: an ambiguous
+    day/month date (about 0.63–0.67) or a UK phone that can't be made E.164 (0.57)
+    goes to review. A filled-down supplier (0.86) or a currency inferred from "$"
+    (0.80) is approved.
+- **Alternatives:** One threshold for both (then everything under the bar either
+  costs Opus money or bypasses review), or 0.85 (it sent every inferred currency to
+  review).
+- **Why:** It separates "the model isn't sure" (escalate) from "the source is
+  ambiguous" (ask a human).
+- **Consequences:** The threshold is part of the validator version. Tune it against
+  review-queue precision in Milestone 7.
+
+## D-032: Verdicts stored per validator version and recomputed each run
+- **Date:** 2026-10-12 · **Milestone:** 4 · **Status:** Accepted (owner)
+- **Context:** Validation is cheap and deterministic. Human decisions (Milestone 6)
+  must never be lost to a re-run.
+- **Choice:**
+  - The `validations` table holds one row per extracted record and validator
+    version: the rules version plus a hash of the thresholds. It stores the status
+    and the findings as JSON.
+  - `validate` deletes and rewrites the rows for the current version. Other
+    versions are kept, so threshold experiments can be compared side by side.
+  - Human approvals and corrections will live in their own tables with an audit
+    trail.
+- **Alternatives:** A status column on `extracted_records` (one version only,
+  overwritten by every run), or incremental validation (more code for no gain at
+  this size).
+- **Why:** It's idempotent and simple, and machine verdicts and human decisions
+  never overwrite each other.
+- **Consequences:** The UI and evals read the current version's verdicts.
+  - Building this found two more ground-truth bugs in the generator, fixed in
+    generator 1.2.0: email signatures that didn't print the city still claimed
+    one. And the subtotal-less "statement" layout needed the totals rule to fall
+    back to the line items, or one planted bad total was missed.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-None right now. Next up, Milestone 4: validation rules per pack, and how rule
-results combine with field confidence into `auto_approved` / `needs_review` /
-`rejected`.
+None right now. Milestone 5 (reconciliation) will need decisions on:
+- fuzzy-match thresholds for auto-merging versus sending a match to review;
+- which source wins a field conflict (most recent, most trusted format, or human);
+- re-validating merged records (see D-029).

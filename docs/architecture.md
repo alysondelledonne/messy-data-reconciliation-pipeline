@@ -40,14 +40,14 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | Component | Location | Responsibility | Status |
 |---|---|---|---|
 | Data generator | `data_gen/` | Shared format writers, plus one generator per pack; writes the corpus, ground truth and a hash manifest | **Built (M1)** |
-| Domain packs | `src/pipeline/domains/<pack>/` | Target model, extraction guidance, rules, entity keys | **Schemas (M1) and extraction guidance (M3) built**: `PackInfo` registry. Rules and keys come later |
+| Domain packs | `src/pipeline/domains/<pack>/` | Target model, extraction guidance, validation rules, entity keys | **Schemas (M1), extraction guidance (M3) and rules (M4) built**: `PackInfo` registry. Entity keys come in M5 |
 | Ingest | `src/pipeline/ingest/` | Format adapters → raw records; encodings, dates, amounts normalized next to the original values; exact source locations | **Built (M2)** |
 | Extract | `src/pipeline/extract/` | Claude structured outputs generated from the pack schema; per-field confidence and evidence, evidence check against the source; column mappings for structured rows; cache plus token and cost log in `llm_calls`; Haiku → Opus escalation | **Built (M3)**; live accuracy measured in M7 |
-| Validate | `src/pipeline/validate/` | Pack rules plus confidence → `auto_approved` / `needs_review` / `rejected`, with reasons | Planned (M4) |
+| Validate | `src/pipeline/validate/` | Pack rules plus generic extraction checks → `auto_approved` / `needs_review` / `rejected`, with readable reasons | **Built (M4)**; per source, before reconciliation (D-029) |
 | Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz), dedupe across sources, record linking, field-level conflicts | Planned (M5) |
-| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest (M2) and extraction (M3) tables built**; reconciliation and audit tables come later |
+| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest (M2), extraction (M3) and validation (M4) tables built**; reconciliation and audit tables come later |
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
-| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]` | **Built** for db, ingest (M2) and extract (M3) |
+| CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]`, `validate` | **Built** for db, ingest (M2), extract (M3) and validate (M4) |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
 | Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (field accuracy of extractions so far) built in M3; full harness planned (M7) |
 | Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally and as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
@@ -183,6 +183,31 @@ such as `grounding_failed`, `invalid_value`, `missing_year`,
 `inferred_from_amount_currency` and `file_level_constant`. Record-level flags
 include `missing_required:<field>`.
 
+## Validation (Milestone 4)
+
+```mermaid
+flowchart LR
+    ER[("extracted_records<br/>values + field_meta + flags")] --> RV["RecordView<br/>(+ method, format, escalated, reasons)"]
+    RV --> G["engine: generic extraction checks<br/>required missing · unreadable · missing year ·<br/>low confidence &lt; 0.75 · not in source · failed escalation"]
+    RV --> P["pack rules (domains/&lt;pack&gt;/rules.py)<br/>invoices: sums, totals, tax rate, dates, identifiable<br/>contacts: email, E.164, ISO country, name shape, identifiable"]
+    G --> F["findings: rule · severity · message · fields"]
+    P --> F
+    F --> S{"any reject? → rejected<br/>any review? → needs_review<br/>else → auto_approved"}
+    S --> V[("validations<br/>per validator version")]
+```
+
+| Module | Role |
+|---|---|
+| `validate/types.py` | `Finding`, `RecordView`, `Rule`, severities and statuses (shared with packs) |
+| `validate/engine.py` | Generic extraction checks, combining findings into a status, `validator_version` |
+| `validate/runner.py` | Load the current extractor version's records, recompute and store verdicts, summary |
+| `domains/invoices/rules.py`, `domains/contacts/rules.py` | Pure rule functions plus `RULES_VERSION` |
+
+On the seed-42 corpus with the fake LLM (tests): all 8 planted bad totals, every
+missing invoice reference, every date without a year, every partial contact name and
+every UK national phone number go to review. Every clean text PDF that states its
+currency is auto-approved.
+
 ## Data model
 
 Migration `0001` (`migrations/versions/0001_ingest_tables.py`):
@@ -287,6 +312,11 @@ erDiagram
 - `extraction_results` is unique on `(raw_record_id, extractor_version)`: re-running
   only processes new raw records. A new prompt or schema version re-extracts
   everything, mostly answered from the `llm_calls` cache.
+Migration `0003` (`migrations/versions/0003_validations.py`): `validations`
+(`extracted_record_id` FK cascade, `pack`, `validator_version`, `status`, `findings`
+JSONB list of `{rule, severity, message, fields}`), unique on
+`(extracted_record_id, validator_version)`, indexed on `(pack, status)`.
+
 - `source_files` is unique on `(pack, path, sha256)`: re-ingesting is a no-op, and
   identical content under another path is stored with `meta.identical_to` (D-020).
 - `meta` holds per-format details: preamble lines, header row, sheet names,

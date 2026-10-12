@@ -3,6 +3,7 @@
 uv run python -m pipeline.run db upgrade
 uv run python -m pipeline.run ingest --pack invoices data/generated/invoices [--dry-run]
 uv run python -m pipeline.run extract --pack invoices [--limit N] [--estimate]
+uv run python -m pipeline.run validate --pack invoices
 """
 
 import argparse
@@ -104,6 +105,16 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    from pipeline.config import get_settings
+    from pipeline.store.db import make_engine, make_session
+    from pipeline.validate.runner import validate_pack
+
+    with make_session(make_engine()) as session:
+        print(validate_pack(session, args.pack, get_settings()).summary())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pipeline", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -128,6 +139,10 @@ def main(argv: list[str] | None = None) -> int:
     ext.add_argument("--estimate", action="store_true", help="estimate calls and cost; no API")
     ext.add_argument("--files-root", type=Path, help="where source files live, for scanned PDFs")
     ext.set_defaults(func=cmd_extract)
+
+    val = sub.add_parser("validate", help="apply pack rules and confidence checks -> statuses")
+    val.add_argument("--pack", required=True)
+    val.set_defaults(func=cmd_validate)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     grounding_fail_ratio: float = 0.34  # share of ungrounded fields that triggers escalation
     extract_workers: int = 8  # concurrent API calls
     escalation_fallbacks: bool = True  # server-side refusal fallback on the escalation model
+    # Validation (D-031): a present value below this goes to human review. Kept above
+    # confidence_threshold: values in between aren't worth the bigger model but deserve a look.
+    review_confidence: float = 0.75
     prices: dict[str, ModelPrice] = DEFAULT_PRICES
 
     @field_validator("anthropic_api_key", "anthropic_workspace_id", mode="before")

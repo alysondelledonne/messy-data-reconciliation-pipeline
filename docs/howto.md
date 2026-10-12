@@ -314,10 +314,48 @@ mismatches with file and location. A quick sanity check; the full eval is Milest
 - **Pay for fresh answers:** bump `PROMPT_VERSION` in `src/pipeline/extract/prompts.py`.
   Do this whenever the prompts change meaning.
 
+## Validate extracted records (M4)
+
+```bash
+uv run python -m pipeline.run validate --pack invoices
+uv run python -m pipeline.run validate --pack contacts
+```
+- No API calls; it takes seconds.
+- It prints counts per status, the most common reasons, and approved / review /
+  rejected counts per source format.
+- Re-run it any time, for example after a new extraction or a threshold change. It
+  replaces the verdicts for the current validator version.
+- The thresholds are in `.env`: `REVIEW_CONFIDENCE` (default 0.75) and
+  `CONFIDENCE_THRESHOLD` (0.6, extraction escalation). Changing one creates a new
+  validator version, and the old verdicts are kept for comparison.
+
+```sql
+-- Status counts
+SELECT pack, status, count(*) FROM validations GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- What sends records to review, with an example message per rule
+SELECT v.pack, f->>'rule' AS rule, count(*) AS records, min(f->>'message') AS example
+FROM validations v, jsonb_array_elements(v.findings) f
+WHERE f->>'severity' <> 'info' GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+
+-- The review queue: source location and every reason
+SELECT sf.path, r.location, string_agg(f->>'message', ' | ') AS reasons
+FROM validations v JOIN extracted_records x ON x.id = v.extracted_record_id
+JOIN extraction_results er ON er.id = x.result_id JOIN raw_records r ON r.id = er.raw_record_id
+JOIN source_files sf ON sf.id = r.source_file_id, jsonb_array_elements(v.findings) f
+WHERE v.pack = 'invoices' AND v.status = 'needs_review' AND f->>'severity' <> 'info'
+GROUP BY v.id, sf.path, r.location ORDER BY sf.path LIMIT 20;
+```
+
+Expect a large share of invoice reviews to come from gaps in a single source: a
+legacy CSV row with no currency marker, a procurement row without an invoice number,
+an ambiguous `04/03/24` date. Reconciliation (M5) can fill many of these from other
+sources for the same invoice (D-029).
+
 ---
 
 ## Planned (not yet available)
 
-- **Validate, reconcile** (M4–M5): CLI commands from `src/pipeline/run.py`.
+- **Reconcile** (M5): CLI command from `src/pipeline/run.py`.
 - **Run the app** (M6): Streamlit.
 - **Run evals** (M7): the harness and where its results are saved.

@@ -16,6 +16,7 @@ from typing import Any
 
 from data_gen.ground_truth import GroundTruth
 from data_gen.mess import DATE_STYLES, PHONE_STYLES, format_amount, format_date, format_phone
+from data_gen.packs.contacts.vocab import COUNTRY_SPELLINGS
 from pipeline.extract.client import LLMRequest, LLMResponse
 from pipeline.ingest.models import location_covers
 
@@ -93,6 +94,7 @@ def printed_forms(value: Any) -> list[str]:
     except (InvalidOperation, ValueError):
         pass
     forms += {"USD": ["$"], "EUR": ["€", "EUR"], "CAD": ["CAD", "CA$", "$"]}.get(s, [])
+    forms += COUNTRY_SPELLINGS.get(s, [])
     if s.startswith("+"):
         with contextlib.suppress(ValueError):
             forms += [format_phone(s, st) for st in PHONE_STYLES]

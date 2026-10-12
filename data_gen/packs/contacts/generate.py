@@ -342,6 +342,8 @@ def _signature(v: _View, rng: random.Random) -> list[str]:
         lines.append(f"{rng.choice(['D:', 'm.', 'Tel', 'Phone:', 'Cell:'])} {v.phone_text}")
     if v.city and rng.random() < 0.4:
         lines.append(v.city)
+    else:
+        v.city = None  # not printed, so the source doesn't state it
     return lines
 
 
