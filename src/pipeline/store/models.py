@@ -247,6 +247,9 @@ class GoldenRecord(Base):
     status: Mapped[str] = mapped_column(String(16))
     findings: Mapped[list[dict[str, Any]]] = mapped_column(default=list)
     source_count: Mapped[int] = mapped_column(Integer)
+    # Stable identity across rebuilds: a hash of the sources it was built from (D-038).
+    golden_key: Mapped[str] = mapped_column(String(32), index=True)
+    source_keys: Mapped[list[str]] = mapped_column(default=list)  # "path#location#index"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     links: Mapped[list["RecordLink"]] = relationship(
@@ -287,3 +290,56 @@ class MatchDecision(Base):
     confidence: Mapped[float | None]
     reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GoldenReview(Base):
+    """A reviewer's approval of a golden record, keyed so it survives rebuilds (D-038)."""
+
+    __tablename__ = "golden_reviews"
+    __table_args__ = (UniqueConstraint("pack", "golden_key", name="uq_golden_reviews_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pack: Mapped[str] = mapped_column(String(64))
+    golden_key: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16))  # approved
+    source_keys: Mapped[list[str]] = mapped_column(default=list)
+    reviewer: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GoldenOverride(Base):
+    """A reviewer's corrected value for one field of a golden record (D-038)."""
+
+    __tablename__ = "golden_overrides"
+    __table_args__ = (
+        UniqueConstraint("pack", "golden_key", "field", name="uq_golden_overrides_field"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pack: Mapped[str] = mapped_column(String(64))
+    golden_key: Mapped[str] = mapped_column(String(32))
+    field: Mapped[str] = mapped_column(String(64))
+    value: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    source_keys: Mapped[list[str]] = mapped_column(default=list)
+    reviewer: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReviewEvent(Base):
+    """Append-only audit trail of every human action (D-038)."""
+
+    __tablename__ = "review_events"
+    __table_args__ = (Index("ix_review_events_pack_at", "pack", "at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    actor: Mapped[str] = mapped_column(String(64))  # human:<name>
+    action: Mapped[str] = mapped_column(String(32))  # approve | unapprove | correct | match
+    pack: Mapped[str] = mapped_column(String(64))
+    target: Mapped[str] = mapped_column(Text)  # golden key, or "a | b" for a name pair
+    field: Mapped[str | None] = mapped_column(String(64))
+    old: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    new: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")

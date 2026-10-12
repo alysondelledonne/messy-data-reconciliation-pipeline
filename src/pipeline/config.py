@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     match_review: float = 80.0  # below this, names are different organizations
     match_llm: bool = True  # let the small model adjudicate the band in between
     match_llm_confidence: float = 0.8  # below this the model's verdict goes to human review
+    # Review app (M6): where source files are found for previews, as <root>/<pack>/<path>
+    # or <root>/<path>; falls back to the folder recorded at ingest.
+    files_root: str | None = None
     prices: dict[str, ModelPrice] = DEFAULT_PRICES
 
     @field_validator("anthropic_api_key", "anthropic_workspace_id", mode="before")

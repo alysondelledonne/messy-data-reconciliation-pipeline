@@ -778,12 +778,79 @@ Entry template:
 - **Consequences:** A document the model refuses every time is re-sent on every run.
   That's a few cents at most; `estimate` counts these documents as pending.
 
+## D-038: Reviews are stored apart from golden records, keyed by their sources
+- **Date:** 2026-10-12 · **Milestone:** 6 · **Status:** Accepted (owner)
+- **Context:** `reconcile` deletes and rebuilds golden records on every run (D-034), so
+  a correction stored on a golden record would be lost.
+- **Choice:**
+  - Each golden record gets a `golden_key`: a hash of its sorted source keys
+    (`path#location#record index`). These stay the same across re-extraction while
+    linking doesn't change.
+  - Approvals (`golden_reviews`) and corrected values (`golden_overrides`, per field)
+    are stored by `golden_key`. `reconcile` calls `apply_reviews` after every rebuild:
+    corrections are re-applied, the record is re-checked against the pack rules, and
+    approvals set `approved`.
+  - If a stored review's key no longer exists (its sources changed), it isn't applied.
+    Any new record sharing sources with it gets a `review_orphaned` review finding
+    naming the earlier review, and a reviewer can re-apply the corrections with one
+    click.
+  - Every action goes to an append-only `review_events` table (who, when, what, old and
+    new values, note).
+- **Alternatives:** Update golden records in place instead of rebuilding (more code and
+  harder to reason about). Key reviews by golden id (lost on every run). Key them by a
+  business key such as vendor plus invoice number (fragile when the reviewer is fixing
+  exactly those fields).
+- **Why:** Rebuilding stays simple and idempotent, and no human work is silently lost
+  or silently applied to a different record.
+- **Consequences:** Migration 0005 clears existing golden records (they are rebuilt by
+  the next `reconcile`).
+
+## D-039: Approving a golden record doesn't approve its source records
+- **Date:** 2026-10-12 · **Milestone:** 6 · **Status:** Accepted (owner)
+- **Choice:** A golden record gets the human status `approved`. Source records keep the
+  machine verdicts from `validate`.
+- **Alternatives:** Cascade the approval to every linked source record.
+- **Why:** Keeping machine and human verdicts separate lets Milestone 7 measure the
+  review queue against ground truth (how many queued records really were wrong, and
+  how many wrong records were auto-approved).
+
+## D-040: No login; reviewers name themselves
+- **Date:** 2026-10-12 · **Milestone:** 6 · **Status:** Accepted (owner)
+- **Choice:** A name typed in the sidebar is recorded as `human:<name>` on every
+  decision. Actions are disabled until a name is entered.
+- **Alternatives:** Streamlit authentication with an identity provider; an
+  app-specific user table.
+- **Why:** It's a local demo on synthetic data. Real authentication and roles (who may
+  decide entity matches, who may approve) are listed under "what I'd do next" for a
+  real deployment.
+
+## D-041: Review logic in `pipeline.review`, thin Streamlit pages, Docker app service
+- **Date:** 2026-10-12 · **Milestone:** 6 · **Status:** Accepted (owner)
+- **Choice:**
+  - Actions, queries and source previews are plain Python in `src/pipeline/review/`,
+    tested like the rest of the pipeline. Pages in `app/views/` only lay things out.
+    (The folder isn't called `pages/`, which would switch on Streamlit's automatic page
+    list and override `st.navigation`.)
+  - Pages are tested with Streamlit's `AppTest` against the test database, with the
+    session factory swapped for the test's session.
+  - The app reconciles from the Name matches tab with no model client: stored decisions
+    are reused and new close calls wait for a person, so the UI never spends money.
+  - `docker compose up` builds the app image (`Dockerfile`: Python 3.12 slim, uv, no
+    generator or dev dependencies, non-root user, health check), applies migrations
+    and serves Streamlit on port 8501 with the corpus mounted read-only.
+  - Streamlit becomes a main dependency, and pypdfium2 moves from the generator group
+    to the main dependencies so the app can render PDF pages.
+- **Alternatives:** Logic inside the page scripts (untestable without a browser). A
+  separate API service plus front end (more moving parts than a review tool needs).
+- **Why:** It's testable, small, and starts with one command.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-None right now. Milestone 6 (Streamlit UI) will need decisions on:
-- how a reviewer's correction to a golden record is stored so that it survives a
-  rebuild (D-034);
-- whether approving a golden record also approves its source records;
-- who may decide pending entity matches (D-036), and whether that needs a login.
+None right now. Milestone 7 (evals, CI, README, demo) will need decisions on:
+- the eval sample: the full seed-42 corpus each run, or a fixed smaller sample to keep
+  live runs cheap;
+- whether CI also runs a small live eval with a real key (a repository secret), or only
+  the fake;
+- what the demo is: a recorded walkthrough, screenshots in the README, or a hosted app.

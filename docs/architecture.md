@@ -45,12 +45,13 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | Extract | `src/pipeline/extract/` | Claude structured outputs generated from the pack schema; per-field confidence and evidence, evidence check against the source; column mappings for structured rows; cache plus token and cost log in `llm_calls`; Haiku → Opus escalation | **Built (M3)**; live accuracy measured in M7 |
 | Validate | `src/pipeline/validate/` | Pack rules plus generic extraction checks → `auto_approved` / `needs_review` / `rejected`, with readable reasons | **Built (M4)**; per source, before reconciliation (D-029) |
 | Reconcile | `src/pipeline/reconcile/` | Canonical entities (rapidfuzz plus a lookalike guard, close calls to Claude or a human), record linking across sources, survivorship per field, conflicts, re-validated golden records | **Built (M5)** |
-| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Ingest (M2), extraction (M3), validation (M4) and reconciliation (M5) tables built**; the audit trail for human corrections comes in M6 |
+| Store | `src/pipeline/store/`, `migrations/` | SQLAlchemy models, Alembic migrations, audit trail | **Built**: ingest (M2), extraction (M3), validation (M4), reconciliation (M5), review and audit (M6) tables |
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
 | CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]`, `validate`, `reconcile [--no-llm]` | **Built** for db, ingest (M2), extract (M3), validate (M4) and reconcile (M5) |
-| UI | `app/` | Streamlit: Overview, Review queue, Exceptions | Planned (M6) |
+| Review | `src/pipeline/review/` | Approve, correct, decide name matches; re-apply reviews after each rebuild; audit trail; source previews; page queries | **Built (M6)** |
+| UI | `app/` | Streamlit: Overview, Review queue, Exceptions (thin pages over `pipeline.review`) | **Built (M6)** |
 | Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (extraction field accuracy, M3) and `reconcile_check.py` (linking purity, entity pairs, golden field accuracy, M5) built; full harness planned (M7) |
-| Infra | `docker-compose.yml`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 locally and as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1)**. Postgres 16 container verified healthy by the owner on macOS |
+| Infra | `docker-compose.yml`, `Dockerfile`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 and the review app (`docker compose up`); Postgres as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1; app service M6)**. Postgres 16 verified by the owner on macOS; the app image built and ran in development |
 
 ## Synthetic corpus (Milestone 1)
 
@@ -263,6 +264,38 @@ First live run (the owner's, 2026-10-12, real Claude extraction, seed-42 corpus,
 
 Milestone 7 turns this into the repeatable eval.
 
+## Review app (Milestone 6)
+
+```mermaid
+flowchart LR
+    U["Reviewer<br/>(name in the sidebar)"] --> APP["Streamlit pages<br/>app/views/*.py"]
+    APP --> Q["pipeline.review.queries<br/>overview · queue · exceptions · audit"]
+    APP --> P["pipeline.review.preview<br/>PDF pages · email · rows · text"]
+    APP --> S["pipeline.review.service<br/>approve · correct · decide match · re-apply"]
+    S --> T[("golden_reviews · golden_overrides<br/>match_decisions · review_events")]
+    REC["reconcile (rebuild)"] -->|apply_reviews| GR[("golden_records<br/>golden_key = hash of sources")]
+    T --> REC
+```
+
+| Module | Role |
+|---|---|
+| `review/service.py` | Reviewer actions, input parsing against the pack schema, re-validation, `apply_reviews` (called by reconcile), orphan detection |
+| `review/queries.py` | Read-only rows for each page |
+| `review/preview.py` | Source previews as data: PDF pages rendered with pypdfium2, email headers and body, neighbouring rows, numbered text with evidence lines marked |
+| `review/ui.py` | Streamlit helpers: session, sidebar, tables, preview rendering |
+| `app/streamlit_app.py`, `app/views/` | Navigation and the three pages |
+
+- **Statuses:** a golden record is `auto_approved`, `needs_review` or `rejected` from its
+  findings, or `approved` by a person. Source records keep their machine verdicts
+  (D-039).
+- **Corrections** are stored per field and re-applied after every rebuild. The
+  record's provenance says `corrected by human:<name>` and keeps the machine value.
+- **Orphans:** if the sources behind a reviewed record change, its `golden_key` changes
+  and the stored review no longer matches. The new record that shares sources with it
+  gets a `review_orphaned` finding and goes back to the queue (D-038).
+- **Tests:** service and preview tests on the corpus, plus Streamlit `AppTest` runs of
+  each page against the test database, including clicking Approve.
+
 ## Data model
 
 Migration `0001` (`migrations/versions/0001_ingest_tables.py`):
@@ -426,6 +459,18 @@ erDiagram
 - `match_decisions` is unique on `(pack, kind, a, b)` and survives rebuilds; golden
   records, links and entities are rebuilt on every run (D-034).
 
+Migration `0005` (`migrations/versions/0005_review.py`):
+
+- `golden_records` gains `golden_key` (indexed; a hash of the record's sorted source
+  keys `path#location#record_index`) and `source_keys`.
+- `golden_reviews` (`pack`, `golden_key` unique together, `status`, `source_keys`,
+  `reviewer`, `note`): approvals.
+- `golden_overrides` (`pack`, `golden_key`, `field` unique together, `value` JSONB,
+  `source_keys`, `reviewer`, `note`): corrected values.
+- `review_events` (`at`, `actor`, `action` approve/unapprove/correct/reapply/match,
+  `pack`, `target`, `field`, `old`, `new`, `note`): append-only audit trail, indexed on
+  `(pack, at)`.
+
 ## Cross-cutting concerns
 
 - **Traceability:** every value carries its source location from ingest through to
@@ -439,6 +484,8 @@ erDiagram
   nothing extra.
 - **Secrets:** read from `.env` and never committed; gitleaks runs as a pre-commit
   hook.
+- **Audit:** every human action is a row in `review_events`; human decisions are never
+  overwritten by a machine run.
 - **Testing:** every module has tests. CI uses a fake LLM client built from ground
   truth, so it needs no API key. Engine tests run against both packs.
 - **Cost control:** small model first, a response cache keyed on content, column

@@ -16,5 +16,20 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pipeline}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FILES_ROOT: /data
+    volumes:
+      - ./data/generated:/data:ro
+    ports:
+      - "${APP_PORT:-8501}:8501"
+
 volumes:
   pgdata:

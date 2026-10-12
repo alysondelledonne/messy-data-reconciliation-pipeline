@@ -22,6 +22,7 @@ class Candidate:
     status: str | None = None  # validation status, if validated
     findings: tuple[str, ...] = ()  # validation rule names that fired
     entity: int | None = None  # assigned by entity resolution
+    source_key: str = ""  # "path#location#record index": stable across re-extraction
 
 
 @dataclass(frozen=True)

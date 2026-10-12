@@ -116,12 +116,14 @@ Needs Docker with Compose v2. On macOS, install [Docker Desktop](https://www.doc
 `docker` command is available. [OrbStack](https://orbstack.dev/) or Colima also work.
 
 ```bash
-docker compose up -d          # Postgres 16 on localhost:${POSTGRES_PORT:-5432}, values from .env
+docker compose up -d postgres # Postgres 16 on localhost:${POSTGRES_PORT:-5432}, values from .env
 docker compose ps             # wait for "healthy"
 docker compose down           # stop; add -v to delete the data volume
 ```
 
-Expect `docker compose ps` to show `(healthy)` after about 5–10 seconds, and `psql`
+`docker compose up -d` without a service name also builds and starts the review app
+(M6, see "Run the review app" below). Expect `docker compose ps` to show `(healthy)`
+after about 5–10 seconds, and `psql`
 (`docker compose exec postgres psql -U pipeline -d pipeline -c 'select version();'`)
 to print `PostgreSQL 16.x`.
 
@@ -431,9 +433,64 @@ UPDATE match_decisions SET decision = 'different', decided_by = 'human:me'
 WHERE pack = 'contacts' AND a = 'bluewater holding' AND b = 'bluewater holdings';
 ```
 
+## Run the review app (M6)
+
+Needs reconciled data (see above). Two ways to run it.
+
+**From your checkout:**
+
+```bash
+uv run python -m pipeline.run db upgrade
+uv run streamlit run app/streamlit_app.py
+```
+
+Then open http://localhost:8501.
+
+**With Docker** (Postgres and the app together; the app applies migrations itself):
+
+```bash
+docker compose up -d --build
+```
+
+Then open http://localhost:8501. The container reads source files from
+`./data/generated` (mounted read-only at `/data`). Change the port with `APP_PORT` in
+`.env`.
+
+Using it:
+1. Enter your name in the sidebar. It's recorded with every decision, as `human:<name>`.
+2. **Review queue → Records** lists golden records that need review. The source is on
+   the left: PDF pages, the email, the spreadsheet rows around the record, or the text
+   with the evidence highlighted. The golden record is on the right, with why each
+   value won and what lost.
+   - **Approve** marks the golden record `approved`.
+   - **Correct a field** saves a value for one field (empty clears it; JSON for line
+     items). The record is re-checked against the pack rules right away.
+3. **Review queue → Name matches** lists company or vendor names the rules and the
+   model couldn't settle. Choose *Same organization* or *Different*, then **Re-run
+   reconcile now** (it makes no model calls).
+4. **Exceptions** has duplicates, unmatched records, conflicts, rule failures and the
+   audit trail, each downloadable as CSV.
+
+Approvals and corrections survive re-running `reconcile`, which re-applies them. If
+the sources behind a reviewed record change (for example, after re-extraction links
+another document to it), the record comes back to the queue as `review_orphaned`, with
+a button to re-apply the earlier corrections.
+
+If previews say "Source file not found", set `FILES_ROOT` in `.env` to the corpus
+folder (for example `data/generated`).
+
+```sql
+-- Every human decision, newest first
+SELECT at, actor, action, pack, target, field, old, new, note
+FROM review_events ORDER BY at DESC LIMIT 20;
+
+-- Stored corrections and approvals
+SELECT pack, golden_key, field, value, reviewer FROM golden_overrides;
+SELECT pack, golden_key, reviewer, note FROM golden_reviews;
+```
+
 ---
 
 ## Planned (not yet available)
 
-- **Run the app** (M6): Streamlit.
 - **Run evals** (M7): the harness and where its results are saved.

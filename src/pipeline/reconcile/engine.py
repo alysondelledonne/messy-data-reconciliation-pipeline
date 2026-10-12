@@ -21,6 +21,7 @@ from pipeline.reconcile.entities import NameGroup, PairVerdict, name_groups, res
 from pipeline.reconcile.names import normalize
 from pipeline.reconcile.survive import FieldChoice, choose
 from pipeline.reconcile.types import Candidate, ReconcileSpec
+from pipeline.review.service import apply_reviews, golden_key
 from pipeline.store.models import (
     Entity,
     ExtractedRecord,
@@ -156,9 +157,14 @@ def load_candidates(session: Session, info: PackInfo, settings: Settings) -> lis
                 findings=tuple(
                     f["rule"] for f in (val.findings if val else []) if f["severity"] != "info"
                 ),
+                source_key=source_key(sf.path, raw.location, rec.record_index),
             )
         )
     return out
+
+
+def source_key(path: str, location: dict[str, Any], record_index: int) -> str:
+    return f"{path}#{json.dumps(location, sort_keys=True)}#{record_index}"
 
 
 # --- close calls: human decisions, then the model, then the review queue -----------------
@@ -443,6 +449,7 @@ class ReconcileStats:
     links: Counter[str] = field(default_factory=Counter)
     matches: Counter[str] = field(default_factory=Counter)
     llm_cost: float = 0.0
+    reviews: Counter[str] = field(default_factory=Counter)  # human reviews re-applied
 
     def summary(self) -> str:
         lines = [
@@ -453,6 +460,8 @@ class ReconcileStats:
             f"links by reason: {dict(self.links)}",
             f"statuses: {dict(self.by_status)}",
         ]
+        if self.reviews:
+            lines.append(f"human reviews re-applied: {dict(self.reviews)}")
         if self.conflicts:
             lines.append(
                 "conflicts by field: "
@@ -508,6 +517,7 @@ def build_golden(
                 "grounded": True if support else None,
                 "flags": [],
             }
+            provenance[name]["confidence"] = meta[name]["final_confidence"]
         alts = [
             a
             for a in choice.alternatives
@@ -614,6 +624,7 @@ def reconcile_pack(
     # 2. records
     linking = link_records(spec, cands)
     reasons = linking.reasons
+    goldens: list[GoldenRecord] = []
     for cluster in linking.clusters:
         fields, provenance, conflicts, status, findings, entity_id = build_golden(
             info, cluster, entity_names, settings
@@ -651,14 +662,20 @@ def reconcile_pack(
             status=status,
             findings=[f.as_dict() for f in findings],
             source_count=len({c.source for c in cluster}),
+            golden_key=golden_key(keys := sorted(c.source_key for c in cluster)),
+            source_keys=keys,
             links=[RecordLink(extracted_record_id=c.id, reason=reasons[c.id]) for c in cluster],
         )
         session.add(golden)
+        goldens.append(golden)
         stats.golden += 1
         stats.multi_source += golden.source_count > 1
-        stats.by_status[status] += 1
         stats.links.update(reasons[c.id] for c in cluster)
         stats.conflicts.update(c["field"] for c in conflicts)
-        stats.by_rule.update({f.rule for f in findings if f.severity == "review"})
+    session.flush()
+    stats.reviews = apply_reviews(session, info, settings, goldens)
+    for gr in goldens:
+        stats.by_status[gr.status] += 1
+        stats.by_rule.update({f["rule"] for f in gr.findings if f["severity"] == "review"})
     session.commit()
     return stats
