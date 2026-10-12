@@ -2,8 +2,10 @@
 
 import fnmatch
 import re
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from pipeline.reconcile.types import Candidate, ReconcileSpec
 from pipeline.validate.types import Finding
@@ -16,6 +18,19 @@ SYSTEM_OF_RECORD = ("*ap_register*", "*register*.csv")
 def norm_number(v: object) -> str | None:
     s = re.sub(r"[^A-Za-z0-9]", "", str(v or "")).upper()
     return s or None
+
+
+_PO = re.compile(r"\bP\.?O\.?\s*(?:#|No\.?|number)?[\s:#-]*([A-Z0-9][A-Z0-9-]*\d)", re.I)
+
+
+def norm_po(v: object) -> str | None:
+    """The purchase-order number inside a value: 'PO PO-2489640' (a register memo copied
+    whole), 'PO# 2489640' and 'PO-2489640' are all '2489640'."""
+    s = str(v or "")
+    while (m := _PO.search(s)) and m[1] != s:  # peel off each 'PO' label
+        s = m[1]
+    num = norm_number(s)
+    return num[2:] if num and num.startswith("PO") and num[2:].isdigit() else num
 
 
 def _prefix(num: str) -> str | None:
@@ -35,7 +50,7 @@ def strong_keys(c: Candidate) -> list[str]:
     keys = []
     if num := norm_number(c.values.get("invoice_number")):
         keys.append(f"num:{c.entity}:{num}")
-    if po := norm_number(c.values.get("po_number")):
+    if po := norm_po(c.values.get("po_number")):
         keys.append(f"po:{c.entity}:{po}")
     return keys
 
@@ -77,9 +92,28 @@ def same_number(a: object, b: object) -> bool:
     return norm_number(a) == norm_number(b)
 
 
+def same_po(a: object, b: object) -> bool:
+    return norm_po(a) == norm_po(b)
+
+
 def display_rank(name: str, value: object) -> int:
-    """Show an identifier as the vendor writes it: exports often strip the separators."""
-    return len(str(value or "")) if name in ("invoice_number", "po_number") else 0
+    """Show an identifier as the vendor writes it: exports often strip the separators.
+    A PO number is shown bare, without labels or memo text around it."""
+    s = str(value or "")
+    if name == "invoice_number":
+        return len(s)
+    if name == "po_number":
+        return 100 * int(bool(re.fullmatch(r"PO-?[A-Z0-9-]*\d", s, re.I))) + len(s)
+    return 0
+
+
+def finalize(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """A PO number still wrapped in a label ('PO PO-2489640') is written as 'PO-2489640'."""
+    po = str(fields.get("po_number") or "")
+    core = norm_po(po)
+    if not po or not core or display_rank("po_number", po) >= 100 or "PO" not in po.upper():
+        return {}
+    return {"po_number": f"PO-{core}"}
 
 
 def is_system_of_record(c: Candidate) -> bool:
@@ -140,8 +174,9 @@ SPEC = ReconcileSpec(
         "total": "amount",
         "payment_status": "system_of_record",
     },
-    equivalent={"invoice_number": same_number, "po_number": same_number},
+    equivalent={"invoice_number": same_number, "po_number": same_po},
     display_rank=display_rank,
+    finalize=finalize,
     trust=trust,
     material=frozenset({"total", "subtotal", "tax", "payment_status", "invoice_date", "currency"}),
     system_of_record=is_system_of_record,

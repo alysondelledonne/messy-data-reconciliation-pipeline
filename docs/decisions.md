@@ -709,8 +709,9 @@ Entry template:
   - `recent` (email, phone, job title, company): newest source;
   - `majority` (identity fields), `richest` (line items), `entity` (canonical name).
   Before a policy picks, values that mean the same thing are grouped as variants:
-  `LSC-3177` = `LSC3177`, `0117 4960 320` = `+441174960320`, Mike = Michael, an
-  email one keystroke off. Variants aren't conflicts, and the pack chooses which
+  `LSC-3177` = `LSC3177`, `PO PO-2489640` (a register memo copied whole) =
+  `PO-2489640`, `0117 4960 320` = `+441174960320`, Mike = Michael, an email one
+  keystroke off. Variants aren't conflicts, and the pack chooses which
   form to show (`display_rank`).
   - A national phone number gets the record's country code after survivorship
     (`finalize`).

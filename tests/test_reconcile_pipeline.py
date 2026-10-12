@@ -75,7 +75,7 @@ def test_invoices_reconcile_to_the_true_records(
         for r in invoices_gt.records
     )
     assert s.field_totals["total"] - s.field_hits["total"] == lone_mismatches
-    for name in ("subtotal", "tax", "payment_status", "currency", "line_items"):
+    for name in ("subtotal", "tax", "payment_status", "currency", "line_items", "po_number"):
         assert s.field_hits[name] == s.field_totals[name], name
 
     golden = _golden_by_truth(db_session, invoices_gt)

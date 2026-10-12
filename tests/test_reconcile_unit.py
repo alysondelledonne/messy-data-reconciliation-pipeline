@@ -259,3 +259,15 @@ def test_cluster_findings_for_invoices() -> None:
     copy = cand({}, source="pdf/a_copy.pdf", fmt="pdf")
     rules = {f.rule for f in invoices.SPEC.cluster_findings([pdf, copy, reg])}
     assert "duplicate_document" in rules
+
+
+def test_po_numbers_wrapped_in_memo_text_match_and_are_cleaned() -> None:
+    memo = cand({"po_number": "PO PO-2489640"}, source="invoices/ap_register.csv")
+    pdf = cand({"po_number": "PO-2489640"}, source="pdf/a.pdf", fmt="pdf")
+    c = choose("po_number", [memo, pdf], invoices.SPEC)
+    assert c.value == "PO-2489640" and not c.alternatives
+    assert invoices.finalize({"po_number": "PO PO-2489640"}) == {"po_number": "PO-2489640"}
+    assert invoices.finalize({"po_number": "PO-2489640"}) == {}
+    assert invoices.finalize({"po_number": "4500012"}) == {}
+    a, b = invoice(po_number="PO PO-2489640"), invoice(po_number="PO-2489640")
+    assert invoices.strong_keys(a) == invoices.strong_keys(b)

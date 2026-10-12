@@ -42,6 +42,7 @@ MAPPING_RULES: dict[str, dict[str, list[tuple[str, str, dict[str, str]]]]] = {
         "cur": [("currency", "copy", {})],
         "currency_code": [("currency", "copy", {})],
         "po_id": [("po_number", "copy", {})],
+        "memo": [("po_number", "copy", {})],  # as the live model maps it: "PO PO-2489640"
         "status": [
             (
                 "payment_status",
