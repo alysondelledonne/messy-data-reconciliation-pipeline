@@ -8,6 +8,7 @@ page = st.navigation(
         st.Page("views/overview.py", title="Overview", default=True),
         st.Page("views/review.py", title="Review queue"),
         st.Page("views/exceptions.py", title="Exceptions"),
+        st.Page("views/guide.py", title="Guide and FAQ"),
     ]
 )
 page.run()

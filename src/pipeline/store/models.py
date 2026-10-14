@@ -261,7 +261,10 @@ class RecordLink(Base):
     """Which extracted records a golden record was built from, and why they were joined."""
 
     __tablename__ = "record_links"
-    __table_args__ = (Index("ix_record_links_extracted", "extracted_record_id"),)
+    __table_args__ = (
+        Index("ix_record_links_extracted", "extracted_record_id"),
+        Index("ix_record_links_golden", "golden_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     golden_id: Mapped[int] = mapped_column(ForeignKey("golden_records.id", ondelete="CASCADE"))

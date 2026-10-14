@@ -9,7 +9,8 @@ from contextlib import contextmanager
 from typing import Any
 
 import streamlit as st
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from pipeline.config import Settings, get_settings
@@ -33,6 +34,15 @@ SESSION_FACTORY: Callable[[], Session] = _default_session
 @contextmanager
 def session() -> Iterator[Session]:
     s = SESSION_FACTORY()
+    try:
+        s.execute(text("select 1"))
+    except OperationalError:
+        s.close()
+        st.error(
+            "Can't reach the database. Start Postgres (`docker compose up -d postgres`) "
+            "and check DATABASE_URL in .env, then reload this page."
+        )
+        st.stop()
     try:
         yield s
     finally:
@@ -74,8 +84,8 @@ def csv_bytes(rows: list[dict[str, Any]]) -> bytes:
 
 def _lines_html(lines: list[tuple[int, str, bool]]) -> str:
     body = []
-    for n, text, hit in lines:
-        line = f"<span style='opacity:.5'>{n:>4}</span>  {html.escape(text)}"
+    for n, content, hit in lines:
+        line = f"<span style='opacity:.5'>{n:>4}</span>  {html.escape(content)}"
         body.append(f"<mark>{line}</mark>" if hit else line)
     return (
         "<pre style='white-space:pre-wrap;font-size:0.8rem;max-height:32rem;overflow:auto'>"

@@ -470,6 +470,8 @@ Using it:
    reconcile now** (it makes no model calls).
 4. **Exceptions** has duplicates, unmatched records, conflicts, rule failures and the
    audit trail, each downloadable as CSV.
+5. **Guide and FAQ** explains each page, every review reason (with what to do about
+   it) and common questions.
 
 Approvals and corrections survive re-running `reconcile`, which re-applies them. If
 the sources behind a reviewed record change (for example, after re-extraction links

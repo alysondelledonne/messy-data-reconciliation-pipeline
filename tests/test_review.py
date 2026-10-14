@@ -168,7 +168,7 @@ def test_previews_and_pages_render(
 
     monkeypatch.setattr(ui, "SESSION_FACTORY", factory)
     monkeypatch.setenv("FILES_ROOT", str(corpus_dir))
-    for page in ("overview", "review", "exceptions"):
+    for page in ("overview", "review", "exceptions", "guide"):
         at = AppTest.from_file(str(APP / "views" / f"{page}.py"), default_timeout=60)
         at.session_state["pack"] = "invoices"
         at.run()

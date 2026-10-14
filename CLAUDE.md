@@ -87,6 +87,7 @@ Ingest → Extract (Claude) → Validate → Reconcile → Postgres → Streamli
     fields and flag reasons on the right; approve or correct.
   - *Exceptions:* duplicates, unmatched records, cross-source conflicts and rule
     failures.
+  - *Guide and FAQ:* how to use each page, a glossary of review reasons, and FAQs.
 - **Evals:** compare results with each pack's ground truth. Report:
   - field accuracy per field, per pack and per source format (including text vs
     scanned PDF);

@@ -49,7 +49,7 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | Config | `src/pipeline/config.py` | Settings from env / `.env` (`DATABASE_URL`, `ANTHROPIC_API_KEY` as a secret) | **Built (M1)** |
 | CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]`, `validate`, `reconcile [--no-llm]` | **Built** for db, ingest (M2), extract (M3), validate (M4) and reconcile (M5) |
 | Review | `src/pipeline/review/` | Approve, correct, decide name matches; re-apply reviews after each rebuild; audit trail; source previews; page queries | **Built (M6)** |
-| UI | `app/` | Streamlit: Overview, Review queue, Exceptions (thin pages over `pipeline.review`) | **Built (M6)** |
+| UI | `app/` | Streamlit: Overview, Review queue, Exceptions, Guide and FAQ (thin pages over `pipeline.review`) | **Built (M6)** |
 | Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (extraction field accuracy, M3) and `reconcile_check.py` (linking purity, entity pairs, golden field accuracy, M5) built; full harness planned (M7) |
 | Infra | `docker-compose.yml`, `Dockerfile`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 and the review app (`docker compose up`); Postgres as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1; app service M6)**. Postgres 16 verified by the owner on macOS; the app image built and ran in development |
 
@@ -283,7 +283,7 @@ flowchart LR
 | `review/queries.py` | Read-only rows for each page |
 | `review/preview.py` | Source previews as data: PDF pages rendered with pypdfium2, email headers and body, neighbouring rows, numbered text with evidence lines marked |
 | `review/ui.py` | Streamlit helpers: session, sidebar, tables, preview rendering |
-| `app/streamlit_app.py`, `app/views/` | Navigation and the three pages |
+| `app/streamlit_app.py`, `app/views/` | Navigation and the pages: Overview, Review queue, Exceptions, and a Guide and FAQ (how to use each page, a glossary of statuses, review reasons, value rules and link reasons, with live counts per reason) |
 
 - **Statuses:** a golden record is `auto_approved`, `needs_review` or `rejected` from its
   findings, or `approved` by a person. Source records keep their machine verdicts
@@ -456,6 +456,8 @@ erDiagram
     }
 ```
 
+- `record_links` is indexed on `extracted_record_id` and (migration `0006`) on
+  `golden_id`.
 - `match_decisions` is unique on `(pack, kind, a, b)` and survives rebuilds; golden
   records, links and entities are rebuilt on every run (D-034).
 
