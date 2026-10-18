@@ -491,8 +491,74 @@ SELECT pack, golden_key, field, value, reviewer FROM golden_overrides;
 SELECT pack, golden_key, reviewer, note FROM golden_reviews;
 ```
 
----
+## Run the evals (M7)
 
-## Planned (not yet available)
+After ingest → extract → validate → reconcile for a pack (no API calls; it reads the
+database):
 
-- **Run evals** (M7): the harness and where its results are saved.
+```bash
+uv run python -m evals.run --pack invoices --pack contacts --label live-seed42
+```
+
+It prints a scorecard per pack and saves `evals/results/<date>_<pack>_<label>.json` and
+`.md`, and refreshes `evals/results/HISTORY.md`. Use a label starting with `live` for
+runs with the real model: only those reach the README. Use `--no-save` to just print.
+How each metric is defined is in D-042.
+
+### A second, fresh corpus (shows it isn't tuned to seed 42)
+
+Use a separate database, so the two corpora don't mix (about $0.70 of model calls):
+
+```bash
+docker compose exec postgres createdb -U pipeline pipeline_seed7
+uv run python -m data_gen --seed 7 --out data/seed7
+export DATABASE_URL=postgresql+psycopg://pipeline:YOUR_POSTGRES_PASSWORD@localhost:5432/pipeline_seed7
+uv run python -m pipeline.run db upgrade
+uv run python -m pipeline.run ingest --pack invoices data/seed7/invoices
+uv run python -m pipeline.run ingest --pack contacts data/seed7/contacts
+uv run python -m pipeline.run extract --pack invoices
+uv run python -m pipeline.run extract --pack contacts
+uv run python -m pipeline.run validate --pack invoices
+uv run python -m pipeline.run validate --pack contacts
+uv run python -m pipeline.run reconcile --pack invoices
+uv run python -m pipeline.run reconcile --pack contacts
+uv run python -m evals.run --pack invoices --pack contacts --corpus data/seed7 --label live-seed7
+unset DATABASE_URL
+```
+
+Replace `YOUR_POSTGRES_PASSWORD` with the value in your `.env`.
+
+### Update the README scorecard
+
+```bash
+uv run python -m evals.scorecard
+```
+
+It writes the table between the scorecard markers in `README.md`, from the newest live
+run per pack and seed. CI fails if the README and the saved results disagree, so commit
+the results files and the README together.
+
+### The fake-model baseline (CI)
+
+`tests/test_evals.py` runs the whole pipeline with the fake model and fails if any score
+falls below `evals/baseline_fake.json`. After a deliberate change that moves the scores:
+
+```bash
+UPDATE_EVAL_BASELINE=1 uv run pytest tests/test_evals.py
+```
+
+Then commit the new baseline, giving the reason in the commit message.
+
+## Capture the README screenshots (M7)
+
+With the app running on your live data (not fake-model data):
+
+```bash
+uv run --with playwright playwright install chromium
+uv run streamlit run app/streamlit_app.py
+uv run --with playwright python scripts/demo.py
+```
+
+Run the second and third commands in separate terminals. The script writes
+`docs/img/*.png` and `docs/img/walkthrough.gif`, which the README shows. The browser
+install (first command) is needed once only.

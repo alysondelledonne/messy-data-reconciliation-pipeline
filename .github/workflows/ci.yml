@@ -48,7 +48,13 @@ jobs:
         run: uv run mypy
 
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest --ignore=tests/test_evals.py
+
+      - name: Eval against the baseline (fake model, D-043)
+        run: uv run pytest tests/test_evals.py
+
+      - name: README scorecard matches the saved eval results (D-044)
+        run: uv run python -m evals.scorecard --check
 
       - name: Secret scan
         run: uv run pre-commit run gitleaks-history --hook-stage manual --all-files

@@ -50,8 +50,8 @@ domain. Everything specific to a domain comes from the pack (D-004).
 | CLI | `src/pipeline/run.py` | `db upgrade/downgrade/current`, `ingest [--dry-run]`, `extract [--limit] [--estimate] [--files-root]`, `validate`, `reconcile [--no-llm]` | **Built** for db, ingest (M2), extract (M3), validate (M4) and reconcile (M5) |
 | Review | `src/pipeline/review/` | Approve, correct, decide name matches; re-apply reviews after each rebuild; audit trail; source previews; page queries | **Built (M6)** |
 | UI | `app/` | Streamlit: Overview, Review queue, Exceptions, Guide and FAQ (thin pages over `pipeline.review`) | **Built (M6)** |
-| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | `spot_check.py` (extraction field accuracy, M3) and `reconcile_check.py` (linking purity, entity pairs, golden field accuracy, M5) built; full harness planned (M7) |
-| Infra | `docker-compose.yml`, `Dockerfile`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Postgres 16 and the review app (`docker compose up`); Postgres as a CI service container; CI runs ruff, mypy, pytest (DB tests required) and a gitleaks history scan | **Built (M1; app service M6)**. Postgres 16 verified by the owner on macOS; the app image built and ran in development |
+| Evals | `evals/` | Accuracy per field, pack and format; review precision; missed errors; match accuracy; cost and time | **Built (M7)**: `harness.py` + `run.py` (results in `evals/results/`), `scorecard.py` (README table), a fake-model baseline held in CI; `spot_check.py` and `reconcile_check.py` remain as quick checks |
+| Infra | `docker-compose.yml`, `Dockerfile`, `.github/workflows/ci.yml`, `.pre-commit-config.yaml`, `scripts/demo.py` | Postgres 16 and the review app (`docker compose up`); Postgres as a CI service container; CI runs ruff, mypy, pytest (DB tests required), the fake-model eval baseline, the README scorecard check and a gitleaks history scan; `scripts/demo.py` captures the README screenshots | **Built (M1; app service M6)**. Postgres 16 verified by the owner on macOS; the app image built and ran in development |
 
 ## Synthetic corpus (Milestone 1)
 
@@ -262,7 +262,7 @@ First live run (the owner's, 2026-10-12, real Claude extraction, seed-42 corpus,
   pairs the model wasn't sure about wait for a human. Field accuracy 94–99%.
 - Cost of this run: extraction $0.72 for both packs; entity adjudication under $0.01.
 
-Milestone 7 turns this into the repeatable eval.
+The repeatable eval (Milestone 7) now produces these numbers; see `evals/results/`.
 
 ## Review app (Milestone 6)
 
@@ -295,6 +295,28 @@ flowchart LR
   gets a `review_orphaned` finding and goes back to the queue (D-038).
 - **Tests:** service and preview tests on the corpus, plus Streamlit `AppTest` runs of
   each page against the test database, including clicking Approve.
+
+## Evals (Milestone 7)
+
+```mermaid
+flowchart LR
+    GT["ground_truth.json<br/>truth · occurrences · defects"] --> H["evals/harness.py"]
+    DB[("extracted records · golden records<br/>record links · llm_calls")] --> H
+    H --> J["evals/results/&lt;date&gt;_&lt;pack&gt;_&lt;label&gt;.json + .md<br/>HISTORY.md"]
+    J --> SC["evals/scorecard.py → README table<br/>(live runs only)"]
+    H -. "fake model, seed 42" .-> CI["CI: tests/test_evals.py<br/>vs evals/baseline_fake.json"]
+```
+
+| Module | Role |
+|---|---|
+| `evals/harness.py` | Extraction accuracy (per field, format and method), golden accuracy, review precision, error recall, missed errors, dedupe and entity scores, cost and time per 100 documents (D-042) |
+| `evals/run.py` | CLI: evaluate packs, render Markdown, save results, refresh `HISTORY.md` |
+| `evals/scorecard.py` | Writes the README scorecard from saved live runs; `--check` for CI (D-044) |
+| `evals/baseline_fake.json` | Scores of the fake-model run that CI must not fall below (D-043) |
+| `evals/reconcile_check.py`, `evals/spot_check.py` | Quick checks from earlier milestones; the harness reuses their ground-truth matching |
+
+The eval scores the machine's output: human corrections are reverted to the stored
+machine value and statuses are recomputed from findings.
 
 ## Data model
 

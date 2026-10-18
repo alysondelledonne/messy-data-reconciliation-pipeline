@@ -844,13 +844,80 @@ Entry template:
   separate API service plus front end (more moving parts than a review tool needs).
 - **Why:** It's testable, small, and starts with one command.
 
+## D-042: What the eval measures, and how
+- **Date:** 2026-10-18 · **Milestone:** 7 · **Status:** Accepted (owner)
+- **Context:** The brief asks for field accuracy (per field, pack and format, text vs
+  scanned PDF), review-queue precision, missed errors, dedupe and entity accuracy, and
+  cost and time per 100 documents. Each needs a precise definition to be honest.
+- **Choice:** `evals/harness.py` scores the database against the ground truth, with no
+  model calls:
+  - **Extraction accuracy:** each extracted record against what its own source states
+    (`expected`), per field, per format and per method (model vs column mapping).
+    Planted source records the pipeline never extracted are reported as recall.
+  - **Golden field accuracy:** each golden record against its true record, only on
+    fields at least one linked source states (nothing can recover a value no source
+    gives). Organization names count as right when they normalize to the true name
+    (case, accents and legal suffix ignored); everything else must match exactly
+    (numbers by value, line items by count).
+  - **A golden record is wrong** if any scored field is wrong, it mixes two true
+    records, or its true record is split across golden records. **It has an issue** if
+    its sources carry a planted problem a reviewer should see even when every value
+    ends up right: a bad total, a stale status, a re-sent or re-scanned copy, a PDF
+    missing from the AP register. The issue defects are listed per pack in the harness.
+  - **Review precision** is reported two ways: the share of queued records that were
+    wrong, and the share that were wrong or had an issue (the headline). **Error
+    recall** is the share of wrong records that were queued. **Missed errors** are
+    auto-approved records that are wrong.
+  - **Dedupe and entities** reuse `reconcile_check`: purity, completeness, and
+    precision/recall over pairs of organization spellings.
+  - **Cost and time:** the calls behind the current results (extraction, mappings,
+    name adjudication), each counted once at its original cost, per 100 source files.
+    Time is the sum of call latencies; calls run concurrently, so wall-clock time is
+    lower.
+  - **Machine output only:** human corrections are reverted to the stored machine value,
+    and statuses are recomputed from findings, so reviewing doesn't inflate the score.
+  - Every run is saved as JSON plus Markdown in `evals/results/`, with `HISTORY.md`.
+- **Alternatives:** Score against `expected` only (it hides reconciliation's work).
+  Count any flagged record as a true positive (precision would be meaningless). Score
+  organization names exactly (a missing "SARL" would count as an error on a correctly
+  identified vendor).
+- **Why:** Each number answers one question a buyer would ask, and the definitions are
+  strict where it matters (values, merges) and lenient only where the difference is
+  cosmetic.
+- **Consequences:** Evaluate on the seed-42 corpus (free to re-score from the cache)
+  and on one fresh seed (about $0.70) to show the system isn't tuned to one dataset.
+
+## D-043: CI holds a fake-model eval baseline
+- **Date:** 2026-10-18 · **Milestone:** 7 · **Status:** Accepted (owner)
+- **Choice:** CI runs the full pipeline and eval on the seed-42 corpus with the fake
+  model, and fails if any score falls below `evals/baseline_fake.json`: accuracy,
+  review precision, purity, completeness and entity precision/recall can't drop, and
+  missed errors can't rise. A deliberate change is accepted by re-running with
+  `UPDATE_EVAL_BASELINE=1` and committing the new baseline. Live evals run by hand,
+  with the owner's key, and their results are committed. CI holds no secret.
+- **Alternatives:** A small live eval in CI with the API key as a repository secret
+  (costs money on every push, and results vary with the model).
+- **Why:** The fake model is deterministic, so any drop is caused by code: a matching,
+  value-choice or rule change that made things worse.
+
+## D-044: The README scorecard is generated; demo images come from a script
+- **Date:** 2026-10-18 · **Milestone:** 7 · **Status:** Accepted (owner)
+- **Choice:**
+  - `evals/scorecard.py` writes the README table between markers from the newest saved
+    run per pack and seed, counting only runs labelled `live…`. CI checks that the
+    README matches the saved results.
+  - `scripts/demo.py` drives the running app with Playwright and writes the screenshots
+    and walkthrough GIF to `docs/img/`. They're captured from the owner's live run,
+    never from fake-model data, because the pages show counts and costs.
+- **Alternatives:** Typing results into the README (easy to drift from what was run).
+  A recorded video or a hosted app (harder to keep current; a hosted database costs
+  money).
+- **Why:** The working rule is that README metrics come only from real eval runs; this
+  makes the rule mechanical.
+
 ---
 
 ## Open decisions (waiting on the owner)
 
-None right now. Milestone 7 (evals, CI, README, demo) will need decisions on:
-- the eval sample: the full seed-42 corpus each run, or a fixed smaller sample to keep
-  live runs cheap;
-- whether CI also runs a small live eval with a real key (a repository secret), or only
-  the fake;
-- what the demo is: a recorded walkthrough, screenshots in the README, or a hosted app.
+None. All seven milestones are built. Future work is listed under "What I'd do next" in
+the README.

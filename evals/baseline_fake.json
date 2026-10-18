@@ -1,0 +1,22 @@
+{
+  "contacts": {
+    "completeness": 99.0,
+    "entity_precision": 100.0,
+    "entity_recall": 100.0,
+    "extraction_accuracy": 99.2,
+    "golden_accuracy": 99.0,
+    "missed_errors": 21,
+    "purity": 100.0,
+    "review_precision": 30.0
+  },
+  "invoices": {
+    "completeness": 100.0,
+    "entity_precision": 100.0,
+    "entity_recall": 100.0,
+    "extraction_accuracy": 98.3,
+    "golden_accuracy": 99.7,
+    "missed_errors": 2,
+    "purity": 100.0,
+    "review_precision": 75.0
+  }
+}

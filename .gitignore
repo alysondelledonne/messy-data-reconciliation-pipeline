@@ -4,7 +4,7 @@
 !.env.example
 
 # Generated corpus (D-002): rebuild with `uv run python -m data_gen`
-data/generated/
+data/
 
 # Python / tooling
 __pycache__/

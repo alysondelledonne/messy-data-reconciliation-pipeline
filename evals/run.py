@@ -1,0 +1,161 @@
+"""Run the eval and save the results (D-042). Makes no model calls.
+
+    uv run python -m evals.run --pack invoices --pack contacts --label live-seed42
+    uv run python -m evals.run --pack invoices --corpus data/seed7 --label live-seed7
+
+Scores the current database against the corpus's ground truth and writes
+evals/results/<date>_<pack>_<label>.json and .md, then refreshes evals/results/HISTORY.md.
+Run it after ingest -> extract -> validate -> reconcile.
+"""
+
+import argparse
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from data_gen.ground_truth import GroundTruth
+from evals.harness import evaluate
+
+RESULTS = Path(__file__).resolve().parent / "results"
+
+
+def _fmt(v: Any) -> str:
+    return "n/a" if v is None else f"{v}%" if isinstance(v, float) else str(v)
+
+
+def render(r: dict[str, Any]) -> str:
+    m, ex, g, c = r["meta"], r["extraction"], r["golden"], r["cost"]
+    rq, me, dd, en = g["review_queue"], g["missed_errors"], g["dedupe"], g["entities"]
+    fa = g["field_accuracy"]["overall"]
+    lines = [
+        f"# Eval: {m['pack']} · {m['label']}",
+        "",
+        f"{m['at']} · seed {m['seed']} · generator {m['generator_version']} · "
+        f"commit {m['git_commit'] or 'n/a'} · extractor `{m['extractor_version']}`",
+        "",
+        "## Scorecard",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Golden field accuracy | {_fmt(fa['accuracy'])} ({fa['correct']}/{fa['total']}) |",
+        f"| Extraction field accuracy (per source) | {_fmt(ex['overall']['accuracy'])} |",
+        f"| Planted source records found | {_fmt(ex['occurrences_found']['recall'])} |",
+        f"| Review queue size | {rq['size']} of {g['golden_records']} golden records |",
+        f"| Review precision (record had a wrong value) | {_fmt(rq['precision_wrong'])} |",
+        f"| Review precision (wrong value or planted issue) | "
+        f"{_fmt(rq['precision_wrong_or_issue'])} |",
+        f"| Wrong records caught by review | {_fmt(rq['error_recall'])} |",
+        f"| Missed errors (auto-approved but wrong) | {me['count']} of {me['of_auto_approved']} "
+        f"({_fmt(me['rate'])}) |",
+        f"| Dedupe purity / completeness | {_fmt(dd['purity'])} / {_fmt(dd['completeness'])} |",
+        f"| Entity match precision / recall | {_fmt(en['precision'])} / {_fmt(en['recall'])} |",
+        f"| Cost per 100 documents | ${c['cost_per_100_docs']} |",
+        f"| Model time per 100 documents | {c['model_seconds_per_100_docs']} s |",
+        "",
+        "## Golden field accuracy (vs the true record, fields some source states)",
+        "",
+        "| Field | Correct | Accuracy |",
+        "|---|---|---|",
+    ]
+    for k, v in g["field_accuracy"]["by_field"].items():
+        lines.append(f"| {k} | {v['correct']}/{v['total']} | {_fmt(v['accuracy'])} |")
+    lines += [
+        "",
+        "## Extraction accuracy by source format",
+        "",
+        "| Format | Correct | Accuracy |",
+        "|---|---|---|",
+    ]
+    for k, v in ex["by_format"].items():
+        lines.append(f"| {k} | {v['correct']}/{v['total']} | {_fmt(v['accuracy'])} |")
+    lines += [
+        "",
+        "## Extraction accuracy by field",
+        "",
+        "| Field | Correct | Accuracy |",
+        "|---|---|---|",
+    ]
+    for k, v in ex["by_field"].items():
+        lines.append(f"| {k} | {v['correct']}/{v['total']} | {_fmt(v['accuracy'])} |")
+    lines += ["", "## Outcomes (machine status / ground truth)", ""]
+    lines += [f"- {k}: {v}" for k, v in g["outcomes"].items()]
+    if me["examples"]:
+        lines += ["", "## Missed errors (examples)", ""]
+        for e in me["examples"]:
+            what = ", ".join(e["wrong_fields"]) or ("mixed" if e["mixed"] else "split")
+            lines.append(f"- golden {e['golden_id']} ({e['true_record']}): {what}")
+    lines += [
+        "",
+        "## Cost",
+        "",
+        f"{c['calls']} calls · {c['input_tokens']:,} input / {c['output_tokens']:,} output "
+        f"tokens · ${c['cost_usd']} for {c['documents']} documents · models "
+        + ", ".join(f"{k} ({v})" for k, v in c["models"].items()),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def history(results: Path = RESULTS) -> str:
+    rows = []
+    for p in sorted(results.glob("*.json")):
+        r = json.loads(p.read_text())
+        m, g, c = r["meta"], r["golden"], r["cost"]
+        rows.append(
+            f"| {m['at'][:16].replace('T', ' ')} | {m['pack']} | {m['label']} | {m['seed']} | "
+            f"{_fmt(g['field_accuracy']['overall']['accuracy'])} | "
+            f"{_fmt(g['review_queue']['precision_wrong_or_issue'])} | "
+            f"{g['missed_errors']['count']} | {_fmt(g['dedupe']['purity'])} / "
+            f"{_fmt(g['dedupe']['completeness'])} | ${c['cost_per_100_docs']} | "
+            f"[details]({p.with_suffix('.md').name}) |"
+        )
+    head = [
+        "# Eval history",
+        "",
+        "Every saved eval run, oldest first. Generated by `evals.run`; don't edit by hand.",
+        "",
+        "| When (UTC) | Pack | Label | Seed | Golden accuracy | Review precision | "
+        "Missed errors | Purity / completeness | Cost / 100 docs | |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    return "\n".join(head + rows) + "\n"
+
+
+def save(result: dict[str, Any], results: Path = RESULTS) -> Path:
+    results.mkdir(parents=True, exist_ok=True)
+    m = result["meta"]
+    slug = re.sub(r"[^a-z0-9-]+", "-", m["label"].lower()).strip("-") or "run"
+    stem = f"{m['at'][:16].replace(':', '').replace('-', '').replace('T', '-')}_{m['pack']}_{slug}"
+    path = results / f"{stem}.json"
+    path.write_text(json.dumps(result, indent=2, default=str) + "\n")
+    path.with_suffix(".md").write_text(render(result) + "\n")
+    (results / "HISTORY.md").write_text(history(results))
+    return path
+
+
+def main() -> None:
+    from pipeline.config import get_settings
+    from pipeline.store.db import make_engine, make_session
+
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--pack", action="append", required=True)
+    ap.add_argument("--corpus", type=Path, default=Path("data/generated"))
+    ap.add_argument("--label", required=True, help="e.g. live-seed42 or fake")
+    ap.add_argument("--no-save", action="store_true", help="print only")
+    args = ap.parse_args()
+    with make_session(make_engine()) as session:
+        for pack in args.pack:
+            gt = GroundTruth.model_validate_json(
+                (args.corpus / pack / "ground_truth.json").read_text()
+            )
+            result = evaluate(session, gt, get_settings(), args.label)
+            print(render(result))
+            if not args.no_save:
+                print(f"\nsaved {save(result)}")
+
+
+if __name__ == "__main__":
+    main()
